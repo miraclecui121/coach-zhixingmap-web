@@ -8,6 +8,8 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      - key: NODE_VERSION
+        value: "22.16.0"
       - key: WECHAT_OAUTH_APPID
         sync: false
       - key: WECHAT_OAUTH_SECRET
@@ -20,7 +22,3 @@ services:
         sync: false
       - key: BOOTSTRAP_FIRST_WECHAT_ADMIN
         value: "true"
-      - key: WECHAT_VERIFY_FILENAME
-        sync: false
-      - key: WECHAT_VERIFY_CONTENT
-        sync: false
