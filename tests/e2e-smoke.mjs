@@ -127,12 +127,30 @@ async function main() {
     await page.locator(".current-account").filter({ hasText: "测试用户" }).waitFor();
     await page.locator(".coach-card").filter({ hasText: "真实环境测试教练" }).waitFor();
     await page.locator(".slot-card").filter({ hasText: "预约并支付" }).first().click();
+    await page.getByRole("heading", { name: "确认预约" }).waitFor();
+    await clickText(page, "确认并进入支付");
     await page.getByRole("heading", { name: "微信扫码支付" }).waitFor();
     await page.getByText("微信支付尚未配置").waitFor();
     await clickText(page, "测试环境标记支付成功");
-    await page.getByText("平台托管中").waitFor();
+    await page.getByText("待教练确认").waitFor();
+    const noteText = "想重点聊转型路径和行动计划。";
+    await page.getByPlaceholder("给教练捎句话").fill(noteText);
+    await clickText(page, "保存留言");
 
-    await clickText(page, "模拟完成");
+    await clickText(page, "退出");
+    await login("coach-openid");
+    await page.locator(".current-account").filter({ hasText: "测试教练" }).waitFor();
+    await clickText(page, "教练中心");
+    await page.getByText(`留言：${noteText}`).waitFor();
+    await page.getByRole("button", { name: "接受", exact: true }).click();
+    await page.getByText("教练已接受").waitFor();
+    await page.getByRole("button", { name: "确认完成" }).click();
+    await page.getByText("已完成待评价").waitFor();
+
+    await clickText(page, "退出");
+    await login("user-openid");
+    await page.locator(".current-account").filter({ hasText: "测试用户" }).waitFor();
+    await page.getByText("已完成待评价").waitFor();
     const reviewContent = "教练很具体，预约体验顺畅。";
     const reviewBox = page.locator(".review-box").first();
     await reviewBox.locator("input").fill(reviewContent);
@@ -166,6 +184,12 @@ async function main() {
       .filter({ hasText: "测试教练" })
       .getByRole("button", { name: "通过", exact: true })
       .click();
+    await page.getByRole("button", { name: /提取平台扣点/ }).click();
+    await page
+      .locator(".admin-row")
+      .filter({ hasText: "平台扣点" })
+      .getByRole("button", { name: "通过", exact: true })
+      .click();
 
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.getByText("注册用户").waitFor();
@@ -186,6 +210,12 @@ async function main() {
     assert(
       state.withdrawals.some((withdrawal) => withdrawal.status === "approved"),
       "管理员应能审核通过提现",
+    );
+    assert(
+      state.withdrawals.some(
+        (withdrawal) => withdrawal.target === "platform" && withdrawal.status === "approved",
+      ),
+      "管理员应能提取平台扣点",
     );
     assert(state.settings.commissionEnabled === false, "管理员应能关闭抽佣开关");
     assert(state.settings.commissionRate === 15, "管理员应能调整抽佣比例");

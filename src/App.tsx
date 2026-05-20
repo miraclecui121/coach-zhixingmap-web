@@ -25,7 +25,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 type Role = "user" | "coach" | "admin";
 type CoachStatus = "pending" | "approved" | "rejected";
-type BookingStatus = "reserved" | "paid" | "completed" | "reviewed";
+type BookingStatus = "reserved" | "paid" | "accepted" | "declined" | "completed" | "reviewed";
 type WithdrawalStatus = "pending" | "approved" | "rejected";
 
 type User = {
@@ -72,6 +72,7 @@ type Booking = {
   platformFee: number;
   coachIncome: number;
   status: BookingStatus;
+  note?: string;
   createdAt: string;
   payment?: {
     provider: "wechat_native";
@@ -96,7 +97,8 @@ type Review = {
 
 type Withdrawal = {
   id: string;
-  coachId: string;
+  target?: "coach" | "platform";
+  coachId?: string;
   amount: number;
   status: WithdrawalStatus;
   createdAt: string;
@@ -147,7 +149,9 @@ const seedStore: Store = {
 
 const statusText: Record<BookingStatus, string> = {
   reserved: "待支付",
-  paid: "平台托管中",
+  paid: "待教练确认",
+  accepted: "教练已接受",
+  declined: "教练未接受",
   completed: "已完成待评价",
   reviewed: "已评价",
 };
@@ -396,11 +400,20 @@ export function App() {
     setPaymentBookingId(null);
   }
 
-  function completeBooking(id: string) {
+  function updateBookingStatus(id: string, status: BookingStatus) {
     setStorePatch((draft) => ({
       ...draft,
       bookings: draft.bookings.map((booking) =>
-        booking.id === id ? { ...booking, status: "completed" } : booking,
+        booking.id === id ? { ...booking, status } : booking,
+      ),
+    }));
+  }
+
+  function updateBookingNote(id: string, note: string) {
+    setStorePatch((draft) => ({
+      ...draft,
+      bookings: draft.bookings.map((booking) =>
+        booking.id === id ? { ...booking, note } : booking,
       ),
     }));
   }
@@ -493,7 +506,25 @@ export function App() {
       withdrawals: [
         {
           id: makeId("w"),
+          target: "coach",
           coachId,
+          amount,
+          status: "pending",
+          createdAt: new Date().toLocaleString("zh-CN", { hour12: false }),
+        },
+        ...draft.withdrawals,
+      ],
+    }));
+  }
+
+  function requestPlatformWithdrawal(amount: number) {
+    if (amount <= 0) return;
+    setStorePatch((draft) => ({
+      ...draft,
+      withdrawals: [
+        {
+          id: makeId("w"),
+          target: "platform",
           amount,
           status: "pending",
           createdAt: new Date().toLocaleString("zh-CN", { hour12: false }),
@@ -572,7 +603,7 @@ export function App() {
               onSelectCoach={setSelectedCoachId}
               onBook={bookSlot}
               onPay={setPaymentBookingId}
-              onComplete={completeBooking}
+              onNote={updateBookingNote}
               onReview={addReview}
             />
           ) : (
@@ -604,6 +635,7 @@ export function App() {
             onUpdateSlot={updateSlot}
             onRemoveSlot={removeSlot}
             onWithdraw={requestWithdrawal}
+            onBookingStatus={updateBookingStatus}
           />
         )}
 
@@ -618,6 +650,7 @@ export function App() {
                 settings,
               }))
             }
+            onPlatformWithdraw={requestPlatformWithdrawal}
             onWithdrawal={(id, status) =>
               setStorePatch((draft) => ({
                 ...draft,
@@ -767,7 +800,7 @@ function UserDesk({
   onSelectCoach,
   onBook,
   onPay,
-  onComplete,
+  onNote,
   onReview,
 }: {
   coaches: Coach[];
@@ -782,13 +815,19 @@ function UserDesk({
   onSelectCoach: (id: string) => void;
   onBook: (coach: Coach, slot: Slot) => void;
   onPay: (id: string) => void;
-  onComplete: (id: string) => void;
+  onNote: (id: string, note: string) => void;
   onReview: (bookingId: string, rating: number, content: string) => void;
 }) {
+  const detailRef = useRef<HTMLDivElement>(null);
+  const [confirmSlot, setConfirmSlot] = useState<{ coach: Coach; slot: Slot } | null>(null);
   const userBookings = bookings.filter((booking) => booking.userId === currentUser.id);
   const coachReviews = selectedCoach
     ? reviews.filter((review) => review.coachId === selectedCoach.id)
     : [];
+  const handleSelectCoach = (coachId: string) => {
+    onSelectCoach(coachId);
+    window.setTimeout(() => detailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 80);
+  };
 
   return (
     <section className="workspace two-col">
@@ -816,7 +855,7 @@ function UserDesk({
               <button
                 className={`coach-card ${selectedCoach?.id === coach.id ? "selected" : ""}`}
                 key={coach.id}
-                onClick={() => onSelectCoach(coach.id)}
+                onClick={() => handleSelectCoach(coach.id)}
               >
                 <Avatar label={coach.name} color={avatarForCoach(coach)} />
                 <span>
@@ -835,7 +874,7 @@ function UserDesk({
 
       <div className="detail-stack">
         {selectedCoach && (
-          <div className="panel detail-panel">
+          <div className="panel detail-panel" ref={detailRef}>
             <div className="coach-hero">
               <Avatar label={selectedCoach.name} color={avatarForCoach(selectedCoach)} large />
               <div>
@@ -868,14 +907,14 @@ function UserDesk({
                     (booking) =>
                       booking.coachId === selectedCoach.id &&
                       booking.slotId === slot.id &&
-                      booking.status !== "reserved",
+                      booking.status !== "declined",
                   );
                   return (
                     <button
                       key={slot.id}
                       className="slot-card"
                       disabled={occupied}
-                      onClick={() => onBook(selectedCoach, slot)}
+                      onClick={() => setConfirmSlot({ coach: selectedCoach, slot })}
                     >
                       <CalendarDays size={18} />
                       <span>{slot.weekday}</span>
@@ -885,6 +924,9 @@ function UserDesk({
                     </button>
                   );
                 })}
+              {selectedCoach.slots.filter((slot) => slot.enabled).length === 0 && (
+                <p className="muted">该教练暂未开放可预约时间</p>
+              )}
             </div>
             <h3 className="subhead">用户评价</h3>
             <ReviewList reviews={coachReviews} users={users} empty="还没有评价" />
@@ -903,11 +945,22 @@ function UserDesk({
             coaches={allCoaches}
             currentUser={currentUser}
             onPay={onPay}
-            onComplete={onComplete}
+            onNote={onNote}
             onReview={onReview}
           />
         </div>
       </div>
+      {confirmSlot && (
+        <ConfirmBookingModal
+          coach={confirmSlot.coach}
+          slot={confirmSlot.slot}
+          onClose={() => setConfirmSlot(null)}
+          onConfirm={() => {
+            onBook(confirmSlot.coach, confirmSlot.slot);
+            setConfirmSlot(null);
+          }}
+        />
+      )}
     </section>
   );
 }
@@ -924,6 +977,7 @@ function CoachDesk({
   onUpdateSlot,
   onRemoveSlot,
   onWithdraw,
+  onBookingStatus,
 }: {
   coach?: Coach;
   bookings: Booking[];
@@ -936,6 +990,7 @@ function CoachDesk({
   onUpdateSlot: (coachId: string, slotId: string, patch: Partial<Slot>) => void;
   onRemoveSlot: (coachId: string, slotId: string) => void;
   onWithdraw: (coachId: string, amount: number) => void;
+  onBookingStatus: (id: string, status: BookingStatus) => void;
 }) {
   if (!coach) {
     return (
@@ -958,7 +1013,12 @@ function CoachDesk({
     .filter((booking) => booking.status === "completed" || booking.status === "reviewed")
     .reduce((sum, booking) => sum + booking.coachIncome, 0);
   const paidOut = withdrawals
-    .filter((withdrawal) => withdrawal.coachId === coach.id && withdrawal.status !== "rejected")
+    .filter(
+      (withdrawal) =>
+        (withdrawal.target ?? "coach") === "coach" &&
+        withdrawal.coachId === coach.id &&
+        withdrawal.status !== "rejected",
+    )
     .reduce((sum, withdrawal) => sum + withdrawal.amount, 0);
   const withdrawable = Math.max(0, completedIncome - paidOut);
 
@@ -978,7 +1038,7 @@ function CoachDesk({
       <div className="detail-stack">
         <div className="panel">
           <div className="metric-row">
-            <Metric icon={<CreditCard size={19} />} label="已托管订单" value={coachBookings.filter((b) => b.status === "paid").length.toString()} />
+            <Metric icon={<CreditCard size={19} />} label="待确认订单" value={coachBookings.filter((b) => b.status === "paid").length.toString()} />
             <Metric icon={<WalletCards size={19} />} label="可提现" value={formatMoney(withdrawable)} />
             <Metric icon={<Star size={19} />} label="评价数" value={reviews.filter((review) => review.coachId === coach.id).length.toString()} />
           </div>
@@ -1008,7 +1068,7 @@ function CoachDesk({
 
         <div className="panel">
           <h2>预约订单</h2>
-          <CoachBookingTable bookings={coachBookings} coach={coach} users={users} />
+          <CoachBookingTable bookings={coachBookings} coach={coach} users={users} onStatus={onBookingStatus} />
         </div>
       </div>
     </section>
@@ -1020,23 +1080,29 @@ function AdminDesk({
   onUpdateCoach,
   onDeleteCoach,
   onSettings,
+  onPlatformWithdraw,
   onWithdrawal,
 }: {
   store: Store;
   onUpdateCoach: (coachId: string, patch: Partial<Coach>) => void;
   onDeleteCoach: (coachId: string) => void;
   onSettings: (settings: Settings) => void;
+  onPlatformWithdraw: (amount: number) => void;
   onWithdrawal: (id: string, status: WithdrawalStatus) => void;
 }) {
   const gross = store.bookings
     .filter((booking) => booking.status !== "reserved")
     .reduce((sum, booking) => sum + booking.amount, 0);
   const escrow = store.bookings
-    .filter((booking) => booking.status === "paid")
+    .filter((booking) => booking.status === "paid" || booking.status === "accepted")
     .reduce((sum, booking) => sum + booking.amount, 0);
   const platformFees = store.bookings
-    .filter((booking) => booking.status !== "reserved")
+    .filter((booking) => booking.status === "completed" || booking.status === "reviewed")
     .reduce((sum, booking) => sum + booking.platformFee, 0);
+  const platformPaidOut = store.withdrawals
+    .filter((withdrawal) => withdrawal.target === "platform" && withdrawal.status !== "rejected")
+    .reduce((sum, withdrawal) => sum + withdrawal.amount, 0);
+  const platformWithdrawable = Math.max(0, platformFees - platformPaidOut);
 
   return (
     <section className="workspace admin-grid">
@@ -1085,6 +1151,14 @@ function AdminDesk({
             }
           />
         </label>
+        <button
+          className="primary full"
+          disabled={platformWithdrawable <= 0}
+          onClick={() => onPlatformWithdraw(platformWithdrawable)}
+        >
+          <HandCoins size={18} />
+          提取平台扣点 {formatMoney(platformWithdrawable)}
+        </button>
       </div>
 
       <div className="panel">
@@ -1153,12 +1227,13 @@ function AdminDesk({
         <div className="admin-table">
           {store.withdrawals.length === 0 && <p className="muted">暂无提现申请</p>}
           {store.withdrawals.map((withdrawal) => {
+            const isPlatform = withdrawal.target === "platform";
             const coach = store.coaches.find((item) => item.id === withdrawal.coachId);
             return (
               <div key={withdrawal.id} className="admin-row">
                 <HandCoins size={22} />
                 <span>
-                  <strong>{coach?.name ?? "未知教练"}</strong>
+                  <strong>{isPlatform ? "平台扣点" : coach?.name ?? "未知教练"}</strong>
                   <small>{withdrawal.createdAt}</small>
                 </span>
                 <strong>{formatMoney(withdrawal.amount)}</strong>
@@ -1288,18 +1363,19 @@ function BookingList({
   coaches,
   currentUser,
   onPay,
-  onComplete,
+  onNote,
   onReview,
 }: {
   bookings: Booking[];
   coaches: Coach[];
   currentUser: User;
   onPay: (id: string) => void;
-  onComplete: (id: string) => void;
+  onNote: (id: string, note: string) => void;
   onReview: (bookingId: string, rating: number, content: string) => void;
 }) {
   const [reviewDraft, setReviewDraft] = useState<Record<string, string>>({});
   const [ratingDraft, setRatingDraft] = useState<Record<string, number>>({});
+  const [noteDraft, setNoteDraft] = useState<Record<string, string>>({});
 
   if (bookings.length === 0) {
     return <p className="muted">暂无预约</p>;
@@ -1312,6 +1388,7 @@ function BookingList({
         const slot = getSlot(coach, booking.slotId);
         const rating = ratingDraft[booking.id] ?? 5;
         const content = reviewDraft[booking.id] ?? "";
+        const note = noteDraft[booking.id] ?? booking.note ?? "";
         return (
           <article key={booking.id} className="booking-card">
             <div>
@@ -1320,6 +1397,9 @@ function BookingList({
               <small>
                 {statusText[booking.status]} · 托管金额 {formatMoney(booking.amount)}
               </small>
+              {booking.status === "paid" && <em className="todo-label">待办：等待教练接受</em>}
+              {booking.status === "accepted" && <em className="todo-label">待办：按约定时间完成对话</em>}
+              {booking.status === "declined" && <em className="todo-label rejected">教练未接受，请联系平台处理退款或重约</em>}
             </div>
             <div className="booking-actions">
               {booking.status === "reserved" && (
@@ -1328,13 +1408,20 @@ function BookingList({
                   去支付
                 </button>
               )}
-              {booking.status === "paid" && (
-                <button className="ghost" onClick={() => onComplete(booking.id)}>
-                  <Check size={16} />
-                  模拟完成
-                </button>
-              )}
             </div>
+            {(booking.status === "paid" || booking.status === "accepted") && (
+              <div className="note-box">
+                <textarea
+                  value={note}
+                  onChange={(event) => setNoteDraft({ ...noteDraft, [booking.id]: event.target.value })}
+                  placeholder="给教练捎句话：你的问题、背景、希望重点聊什么"
+                />
+                <button className="ghost small" onClick={() => onNote(booking.id, note.trim())}>
+                  <MessageSquareText size={16} />
+                  保存留言
+                </button>
+              </div>
+            )}
             {booking.status === "completed" && (
               <div className="review-box">
                 <select value={rating} onChange={(event) => setRatingDraft({ ...ratingDraft, [booking.id]: Number(event.target.value) })}>
@@ -1362,7 +1449,17 @@ function BookingList({
   );
 }
 
-function CoachBookingTable({ bookings, coach, users }: { bookings: Booking[]; coach: Coach; users: User[] }) {
+function CoachBookingTable({
+  bookings,
+  coach,
+  users,
+  onStatus,
+}: {
+  bookings: Booking[];
+  coach: Coach;
+  users: User[];
+  onStatus: (id: string, status: BookingStatus) => void;
+}) {
   if (bookings.length === 0) return <p className="muted">暂无预约订单</p>;
   return (
     <div className="order-table">
@@ -1371,10 +1468,33 @@ function CoachBookingTable({ bookings, coach, users }: { bookings: Booking[]; co
         const user = users.find((item) => item.id === booking.userId);
         return (
           <div key={booking.id}>
-            <span>{user?.name ?? "未知用户"}</span>
+            <span>
+              <strong>{user?.name ?? "未知用户"}</strong>
+              {booking.note && <small>留言：{booking.note}</small>}
+            </span>
             <small>{slot ? `${slot.date} ${slot.time}` : "时间已删除"}</small>
             <strong>{formatMoney(booking.coachIncome)}</strong>
             <em>{statusText[booking.status]}</em>
+            <div className="order-actions">
+              {booking.status === "paid" && (
+                <>
+                  <button className="primary small" onClick={() => onStatus(booking.id, "accepted")}>
+                    <Check size={16} />
+                    接受
+                  </button>
+                  <button className="ghost danger-text small" onClick={() => onStatus(booking.id, "declined")}>
+                    <X size={16} />
+                    不接受
+                  </button>
+                </>
+              )}
+              {booking.status === "accepted" && (
+                <button className="primary small" onClick={() => onStatus(booking.id, "completed")}>
+                  <Check size={16} />
+                  确认完成
+                </button>
+              )}
+            </div>
           </div>
         );
       })}
@@ -1403,6 +1523,45 @@ function ReviewList({ reviews, users, empty }: { reviews: Review[]; users: User[
           </article>
         );
       })}
+    </div>
+  );
+}
+
+function ConfirmBookingModal({
+  coach,
+  slot,
+  onClose,
+  onConfirm,
+}: {
+  coach: Coach;
+  slot: Slot;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="modal-backdrop">
+      <div className="modal">
+        <button className="close" onClick={onClose} aria-label="关闭">
+          <X size={18} />
+        </button>
+        <CalendarDays size={46} className="modal-icon" />
+        <h2>确认预约</h2>
+        <div className="confirm-summary">
+          <span>教练</span>
+          <strong>{coach.name}</strong>
+          <span>时间</span>
+          <strong>
+            {slot.weekday} {slot.date} {slot.time}
+          </strong>
+          <span>金额</span>
+          <strong>{formatMoney(coach.price)}</strong>
+        </div>
+        <p className="muted">确认后进入微信支付。支付成功后会生成待办，并通知教练确认是否接受。</p>
+        <button className="primary full" onClick={onConfirm}>
+          <QrCode size={18} />
+          确认并进入支付
+        </button>
+      </div>
     </div>
   );
 }

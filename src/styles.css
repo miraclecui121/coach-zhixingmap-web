@@ -493,6 +493,16 @@ p {
   display: flex;
 }
 
+.todo-label {
+  color: #0f766e;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.todo-label.rejected {
+  color: #b42318;
+}
+
 .primary,
 .ghost,
 .icon-danger {
@@ -545,6 +555,17 @@ p {
   gap: 8px;
   grid-column: 1 / -1;
   grid-template-columns: 96px minmax(0, 1fr) auto;
+}
+
+.note-box {
+  display: grid;
+  gap: 8px;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.note-box textarea {
+  min-height: 74px;
 }
 
 .review-list article {
@@ -675,14 +696,25 @@ p {
   border-radius: 8px;
   display: grid;
   gap: 8px;
-  grid-template-columns: 1fr 1.4fr auto auto;
+  grid-template-columns: minmax(140px, 1fr) minmax(130px, 1.1fr) auto auto minmax(150px, auto);
   padding: 11px;
+}
+
+.order-table > div > span {
+  display: grid;
+  gap: 4px;
 }
 
 .order-table em {
   color: #0f766e;
   font-style: normal;
   font-weight: 700;
+}
+
+.order-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
 }
 
 .setting-line {
@@ -860,6 +892,28 @@ p {
   font-size: 30px;
 }
 
+.modal-icon {
+  color: #0f766e;
+  justify-self: center;
+  margin-top: 10px;
+}
+
+.confirm-summary {
+  background: #f8faf9;
+  border: 1px solid #e1e8e4;
+  border-radius: 8px;
+  display: grid;
+  gap: 9px 12px;
+  grid-template-columns: 72px minmax(0, 1fr);
+  padding: 13px;
+  text-align: left;
+}
+
+.confirm-summary span {
+  color: #66736e;
+  font-size: 13px;
+}
+
 @media (max-width: 980px) {
   .topbar {
     align-items: flex-start;
@@ -925,6 +979,7 @@ p {
   .coach-hero,
   .booking-card,
   .review-box,
+  .note-box,
   .slot-edit-row,
   .order-table > div,
   .admin-row {
@@ -941,8 +996,19 @@ p {
 
   .booking-actions button,
   .review-box button,
+  .note-box button,
   .slot-edit-row button,
   .admin-row button {
+    width: 100%;
+  }
+
+  .order-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .order-actions button {
     width: 100%;
   }
 
