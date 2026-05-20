@@ -11,6 +11,10 @@
     "test:e2e": "npm run build && node tests/e2e-smoke.mjs"
   },
   "dependencies": {
+    "@types/node": "^25.9.1",
+    "@types/qrcode": "^1.5.6",
+    "@types/react": "^19.2.15",
+    "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.0.4",
     "express": "^5.2.1",
     "lucide-react": "^0.561.0",
@@ -21,10 +25,6 @@
     "vite": "^7.2.6"
   },
   "devDependencies": {
-    "@types/node": "^25.8.0",
-    "@types/qrcode": "^1.5.6",
-    "@types/react": "^19.2.14",
-    "@types/react-dom": "^19.2.3",
     "playwright": "^1.60.0"
   }
 }
