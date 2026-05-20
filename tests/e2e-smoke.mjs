@@ -1,0 +1,199 @@
+import { chromium } from "playwright";
+import { spawn } from "node:child_process";
+import { mkdir } from "node:fs/promises";
+import path from "node:path";
+
+const port = Number(process.env.E2E_PORT || 5199);
+const appUrl = process.env.APP_URL || `http://127.0.0.1:${port}/`;
+const dataFile = path.join(process.cwd(), ".tmp", "e2e-store.json");
+const chromePath =
+  "/Users/cxn/Library/Caches/ms-playwright/chromium-1217/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing";
+
+function assert(condition, message) {
+  if (!condition) {
+    throw new Error(message);
+  }
+}
+
+async function clickText(page, text) {
+  await page.getByText(text, { exact: true }).click();
+}
+
+async function startServer() {
+  await mkdir(path.dirname(dataFile), { recursive: true });
+  const child = spawn("node", ["server.mjs"], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      PORT: String(port),
+      DATA_FILE: dataFile,
+      ALLOW_RESET: "true",
+      ALLOW_MOCK_PAYMENT: "true",
+      ALLOW_DEV_LOGIN: "true",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  child.stderr.on("data", (chunk) => process.stderr.write(chunk));
+  child.stdout.on("data", (chunk) => process.stdout.write(chunk));
+
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    try {
+      const response = await fetch(`${appUrl}api/health`);
+      if (response.ok) return child;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+  }
+
+  child.kill();
+  throw new Error("Test server did not start");
+}
+
+async function main() {
+  const server = await startServer();
+  const browser = await chromium.launch({
+    headless: true,
+    executablePath: chromePath,
+  });
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+
+  try {
+    await fetch(`${appUrl}api/reset`, { method: "POST" });
+    await page.goto(appUrl, { waitUntil: "networkidle" });
+
+    await page.getByText("教练预约商城 H5").waitFor();
+    await page.getByText("服务端共享数据").waitFor();
+    assert((await page.locator(".coach-card").count()) === 0, "空环境不应预置教练数据");
+
+    const login = async (openid) => {
+      await page.getByPlaceholder("测试 openid 登录").fill(openid);
+      await clickText(page, "开发登录");
+    };
+
+    await page.getByPlaceholder("微信昵称").fill("测试教练");
+    await page.getByPlaceholder("测试 openid", { exact: true }).fill("coach-openid");
+    await clickText(page, "开发注册");
+    await page.locator(".current-account").filter({ hasText: "测试教练" }).waitFor();
+    await clickText(page, "教练中心");
+    await page.getByRole("heading", { name: "教练中心" }).waitFor();
+    await page.waitForFunction(() => {
+      return fetch("/api/store")
+        .then((response) => response.json())
+        .then((state) =>
+          state.coaches.some(
+            (coach) => coach.name === "测试教练" && coach.status === "pending",
+          ),
+        );
+    });
+
+    await clickText(page, "退出");
+    await login("admin");
+    await page.locator(".current-account").filter({ hasText: "管理员" }).waitFor();
+    await clickText(page, "管理后台");
+    await page.getByRole("heading", { name: "管理后台" }).waitFor();
+    await page.locator(".admin-row").filter({ hasText: "测试教练" }).locator("select").selectOption("approved");
+
+    await clickText(page, "退出");
+    await login("coach-openid");
+    await page.locator(".current-account").filter({ hasText: "测试教练" }).waitFor();
+    await clickText(page, "教练中心");
+    await page.getByLabel("单次价格").fill("599");
+    await page.getByLabel("标题").fill("真实环境测试教练");
+    await page.getByLabel("教练介绍").fill("这是从空环境注册并审核通过的教练。");
+    await clickText(page, "添加");
+    await page.locator(".slot-edit-row").last().locator("input[type='date']").fill("2026-05-28");
+    await page.locator(".slot-edit-row").last().locator("input").nth(1).fill("15:00-16:00");
+    await page.waitForFunction(() => {
+      return fetch("/api/store")
+        .then((response) => response.json())
+        .then((state) =>
+          state.coaches.some(
+            (coach) =>
+              coach.name === "测试教练" &&
+              coach.title === "真实环境测试教练" &&
+              coach.slots.some((slot) => slot.date === "2026-05-28"),
+          ),
+        );
+    });
+
+    await page.getByPlaceholder("微信昵称").fill("测试用户");
+    await page.getByPlaceholder("测试 openid", { exact: true }).fill("user-openid");
+    await clickText(page, "开发注册");
+    await page.locator(".current-account").filter({ hasText: "测试用户" }).waitFor();
+    await page.locator(".coach-card").filter({ hasText: "真实环境测试教练" }).waitFor();
+    await page.locator(".slot-card").filter({ hasText: "预约并支付" }).first().click();
+    await page.getByRole("heading", { name: "微信扫码支付" }).waitFor();
+    await page.getByText("微信支付尚未配置").waitFor();
+    await clickText(page, "测试环境标记支付成功");
+    await page.getByText("平台托管中").waitFor();
+
+    await clickText(page, "模拟完成");
+    const reviewContent = "教练很具体，预约体验顺畅。";
+    const reviewBox = page.locator(".review-box").first();
+    await reviewBox.locator("input").fill(reviewContent);
+    await reviewBox.getByRole("button", { name: "提交评价" }).click();
+    await page.getByText("教练很具体，预约体验顺畅。").waitFor();
+
+    await clickText(page, "退出");
+    await login("coach-openid");
+    await page.locator(".current-account").filter({ hasText: "测试教练" }).waitFor();
+    await clickText(page, "教练中心");
+    assert(await page.getByText("申请提现").isEnabled(), "完成订单后教练应可申请提现");
+    await page.getByText("申请提现").click();
+    await page.waitForFunction(() => {
+      return fetch("/api/store")
+        .then((response) => response.json())
+        .then((state) =>
+          state.withdrawals.some((withdrawal) => withdrawal.status === "pending"),
+        );
+    });
+
+    await clickText(page, "退出");
+    await login("admin");
+    await page.locator(".current-account").filter({ hasText: "管理员" }).waitFor();
+    await clickText(page, "管理后台");
+    await page.getByRole("heading", { name: "管理后台" }).waitFor();
+    await page.locator(".switch").click();
+    await page.getByLabel("抽佣比例").fill("15");
+    await page.getByText("提现审核").waitFor();
+    await page
+      .locator(".admin-row")
+      .filter({ hasText: "测试教练" })
+      .getByRole("button", { name: "通过" })
+      .click();
+
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.getByText("注册用户").waitFor();
+
+    await page.waitForTimeout(300);
+    const state = await page.evaluate(() =>
+      fetch("/api/store").then((response) => response.json()),
+    );
+    assert(
+      state.bookings.some((booking) => booking.status === "reviewed") &&
+        state.reviews.some((review) => review.content === reviewContent),
+      "新评价应写入服务端共享数据",
+    );
+    assert(
+      state.coaches.some((coach) => coach.name === "测试教练" && coach.status === "approved"),
+      "管理员应能审核通过教练",
+    );
+    assert(
+      state.withdrawals.some((withdrawal) => withdrawal.status === "approved"),
+      "管理员应能审核通过提现",
+    );
+    assert(state.settings.commissionEnabled === false, "管理员应能关闭抽佣开关");
+    assert(state.settings.commissionRate === 15, "管理员应能调整抽佣比例");
+
+    console.log("E2E smoke passed");
+  } finally {
+    await browser.close();
+    server.kill();
+  }
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
