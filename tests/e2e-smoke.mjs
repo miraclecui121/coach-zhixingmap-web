@@ -92,7 +92,11 @@ async function main() {
     await page.locator(".current-account").filter({ hasText: "管理员" }).waitFor();
     await clickText(page, "管理后台");
     await page.getByRole("heading", { name: "管理后台" }).waitFor();
-    await page.locator(".admin-row").filter({ hasText: "测试教练" }).locator("select").selectOption("approved");
+    await page
+      .locator(".admin-row")
+      .filter({ hasText: "测试教练" })
+      .getByRole("button", { name: "通过审核" })
+      .click();
 
     await clickText(page, "退出");
     await login("coach-openid");
@@ -160,7 +164,7 @@ async function main() {
     await page
       .locator(".admin-row")
       .filter({ hasText: "测试教练" })
-      .getByRole("button", { name: "通过" })
+      .getByRole("button", { name: "通过", exact: true })
       .click();
 
     await page.setViewportSize({ width: 1280, height: 900 });

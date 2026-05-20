@@ -1107,22 +1107,13 @@ function AdminDesk({
         <h2>教练维护与审核</h2>
         <div className="admin-table">
           {store.coaches.map((coach) => (
-            <div key={coach.id} className="admin-row">
+            <div key={coach.id} className="admin-row coach-admin-row">
               <Avatar label={coach.name} color={avatarForCoach(coach)} />
               <span>
                 <strong>{coach.name}</strong>
                 <small>{coach.title}</small>
               </span>
-              <select
-                value={coach.status}
-                onChange={(event) =>
-                  onUpdateCoach(coach.id, { status: event.target.value as CoachStatus })
-                }
-              >
-                <option value="pending">待审核</option>
-                <option value="approved">通过</option>
-                <option value="rejected">拒绝</option>
-              </select>
+              <span className={`pill ${coach.status}`}>{coachStatusText[coach.status]}</span>
               <label>
                 <span>价格</span>
                 <input
@@ -1131,6 +1122,24 @@ function AdminDesk({
                   onChange={(event) => onUpdateCoach(coach.id, { price: Number(event.target.value) })}
                 />
               </label>
+              <div className="review-actions" aria-label={`${coach.name}审核操作`}>
+                <button
+                  className="primary small"
+                  disabled={coach.status === "approved"}
+                  onClick={() => onUpdateCoach(coach.id, { status: "approved" })}
+                >
+                  <Check size={16} />
+                  通过审核
+                </button>
+                <button
+                  className="ghost danger-text small"
+                  disabled={coach.status === "rejected"}
+                  onClick={() => onUpdateCoach(coach.id, { status: "rejected" })}
+                >
+                  <X size={16} />
+                  拒绝
+                </button>
+              </div>
               <button className="icon-danger" onClick={() => onDeleteCoach(coach.id)} aria-label="删除教练">
                 <Trash2 size={17} />
               </button>
