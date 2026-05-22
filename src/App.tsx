@@ -328,6 +328,27 @@ export function App() {
     : undefined;
   const canUseCoachDesk = Boolean(currentCoach);
   const canUseAdminDesk = Boolean(currentUser?.isAdmin);
+  const userTodoCount = currentUser
+    ? store.bookings.filter(
+        (booking) =>
+          booking.userId === currentUser.id &&
+          (booking.status === "reserved" ||
+            booking.status === "paid" ||
+            booking.status === "accepted" ||
+            booking.status === "completed"),
+      ).length
+    : 0;
+  const coachTodoCount = currentCoach
+    ? store.bookings.filter(
+        (booking) =>
+          booking.coachId === currentCoach.id &&
+          (booking.status === "paid" || booking.status === "accepted"),
+      ).length
+    : 0;
+  const adminTodoCount = canUseAdminDesk
+    ? store.coaches.filter((coach) => coach.status === "pending").length +
+      store.withdrawals.filter((withdrawal) => withdrawal.status === "pending").length
+    : 0;
 
   function switchRole(nextRole: Role) {
     if (nextRole === "coach" && !currentUser) return;
@@ -569,14 +590,16 @@ export function App() {
             onClick={() => switchRole("user")}
           >
             <Users size={18} />
-            用户商城
+            <span>用户商城</span>
+            {userTodoCount > 0 && <em className="nav-badge">{userTodoCount}</em>}
           </button>
           <button
             className={role === "coach" ? "active" : ""}
             onClick={() => switchRole("coach")}
           >
             <UserRoundCheck size={18} />
-            教练中心
+            <span>教练中心</span>
+            {coachTodoCount > 0 && <em className="nav-badge">{coachTodoCount}</em>}
           </button>
           <button
             className={role === "admin" ? "active" : ""}
@@ -584,7 +607,8 @@ export function App() {
             onClick={() => switchRole("admin")}
           >
             <ShieldCheck size={18} />
-            管理后台
+            <span>管理后台</span>
+            {adminTodoCount > 0 && <em className="nav-badge">{adminTodoCount}</em>}
           </button>
         </aside>
 
@@ -835,8 +859,8 @@ function UserDesk({
       <div className="panel coach-list">
         <div className="section-title">
           <div>
-            <h1>找教练</h1>
-            <p>查看介绍、评价，并预约周三或周四下午的对话时间。</p>
+            <h1>可预约教练</h1>
+            <p>已审核通过的教练会直接显示；点开教练即可查看详情和预约时间。</p>
           </div>
         </div>
         <div className="searchbox">
@@ -848,6 +872,13 @@ function UserDesk({
           />
         </div>
         <div className="coach-stack">
+          {coaches.length === 0 && (
+            <div className="inline-empty">
+              <Users size={30} />
+              <strong>暂无已审核通过的教练</strong>
+              <small>管理员审核通过教练后，普通用户登录即可在这里直接看到。</small>
+            </div>
+          )}
           {coaches.map((coach) => {
             const average =
               reviews.filter((review) => review.coachId === coach.id).reduce((sum, item) => sum + item.rating, 0) /
@@ -904,6 +935,7 @@ function UserDesk({
               {selectedCoach.slots
                 .filter((slot) => slot.enabled)
                 .map((slot) => {
+                  const isOwnCoach = selectedCoach.userId === currentUser.id;
                   const occupied = bookings.some(
                     (booking) =>
                       booking.coachId === selectedCoach.id &&
@@ -914,14 +946,14 @@ function UserDesk({
                     <button
                       key={slot.id}
                       className="slot-card"
-                      disabled={occupied}
+                      disabled={occupied || isOwnCoach}
                       onClick={() => setConfirmSlot({ coach: selectedCoach, slot })}
                     >
                       <CalendarDays size={18} />
                       <span>{slot.weekday}</span>
                       <strong>{slot.date}</strong>
                       <small>{slot.time}</small>
-                      <em>{occupied ? "已预约" : "预约并支付"}</em>
+                      <em>{isOwnCoach ? "不能预约自己" : occupied ? "已预约" : "预约并支付"}</em>
                     </button>
                   );
                 })}
@@ -931,6 +963,13 @@ function UserDesk({
             </div>
             <h3 className="subhead">用户评价</h3>
             <ReviewList reviews={coachReviews} users={users} empty="还没有评价" />
+          </div>
+        )}
+        {!selectedCoach && (
+          <div className="panel empty-state compact-empty">
+            <CalendarDays size={42} />
+            <h2>等待教练开放</h2>
+            <p>有教练通过审核并开放可预约时间后，这里会显示详情和预约入口。</p>
           </div>
         )}
 
@@ -1661,15 +1700,28 @@ function CoachBookingTable({
   onStatus: (id: string, status: BookingStatus) => void;
 }) {
   if (bookings.length === 0) return <p className="muted">暂无预约订单</p>;
+  const statusPriority: Record<BookingStatus, number> = {
+    paid: 0,
+    accepted: 1,
+    completed: 2,
+    reserved: 3,
+    reviewed: 4,
+    declined: 5,
+  };
+  const sortedBookings = [...bookings].sort(
+    (left, right) => statusPriority[left.status] - statusPriority[right.status],
+  );
   return (
     <div className="order-table">
-      {bookings.map((booking) => {
+      {sortedBookings.map((booking) => {
         const slot = getSlot(coach, booking.slotId);
         const user = users.find((item) => item.id === booking.userId);
         return (
           <div key={booking.id}>
             <span>
               <strong>{user?.name ?? "未知用户"}</strong>
+              {booking.status === "paid" && <small className="new-order">新预约待接受</small>}
+              {booking.status === "accepted" && <small className="new-order">已接受，待完成</small>}
               {booking.note && <small>留言：{booking.note}</small>}
             </span>
             <small>{slot ? `${slot.date} ${slot.time}` : "时间已删除"}</small>
