@@ -251,10 +251,6 @@ export function App() {
   const currentUser = sessionUser
     ? store.users.find((user) => user.id === sessionUser.id) ?? sessionUser
     : undefined;
-  const selectedCoach =
-    store.coaches.find((coach) => coach.id === selectedCoachId) ??
-    store.coaches.find((coach) => coach.status === "approved");
-
   const approvedCoaches = useMemo(
     () =>
       store.coaches.filter(
@@ -267,6 +263,9 @@ export function App() {
       ),
     [query, store.coaches],
   );
+  const selectedCoach =
+    approvedCoaches.find((coach) => coach.id === selectedCoachId) ??
+    approvedCoaches[0];
 
   function persistStore(nextStore: Store) {
     window.localStorage.setItem(storageKey, JSON.stringify(nextStore));
@@ -331,9 +330,7 @@ export function App() {
   const canUseAdminDesk = Boolean(currentUser?.isAdmin);
 
   function switchRole(nextRole: Role) {
-    if (nextRole === "coach" && !canUseCoachDesk) {
-      applyCoach("pending");
-    }
+    if (nextRole === "coach" && !currentUser) return;
     if (nextRole === "admin" && !canUseAdminDesk) return;
     setRole(nextRole);
   }
@@ -936,8 +933,8 @@ function UserDesk({
         <div className="panel">
           <div className="section-title compact">
             <div>
-              <h2>我的预约</h2>
-              <p>支付后金额进入平台托管，完成对话后才能评价。</p>
+              <h2>我的待办</h2>
+              <p>支付后生成待办，教练接受并确认完成后，你再评价。</p>
             </div>
           </div>
           <BookingList
@@ -1067,7 +1064,7 @@ function CoachDesk({
         </div>
 
         <div className="panel">
-          <h2>预约订单</h2>
+          <h2>教练待办与订单</h2>
           <CoachBookingTable bookings={coachBookings} coach={coach} users={users} onStatus={onBookingStatus} />
         </div>
       </div>

@@ -76,7 +76,8 @@ async function main() {
     await clickText(page, "开发注册");
     await page.locator(".current-account").filter({ hasText: "测试教练" }).waitFor();
     await clickText(page, "教练中心");
-    await page.getByRole("heading", { name: "教练中心" }).waitFor();
+    await page.getByRole("heading", { name: "申请成为教练" }).waitFor();
+    await clickText(page, "提交教练申请");
     await page.waitForFunction(() => {
       return fetch("/api/store")
         .then((response) => response.json())
