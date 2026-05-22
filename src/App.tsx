@@ -335,7 +335,10 @@ export function App() {
     setRole(nextRole);
   }
 
-  function applyCoach(status: CoachStatus = "pending") {
+  function applyCoach(
+    application: Pick<Coach, "name" | "title" | "price" | "intro" | "background" | "specialties" | "slots">,
+    status: CoachStatus = "pending",
+  ) {
     if (!currentUser) return;
     if (store.coaches.some((coach) => coach.userId === currentUser.id)) {
       setRole("coach");
@@ -352,14 +355,14 @@ export function App() {
         {
           id: coachId,
           userId: currentUser.id,
-          name: currentUser.name,
-          title: "新教练申请",
+          name: application.name,
+          title: application.title,
           status,
-          price: 399,
-          intro: "请完善你的教练介绍。",
-          background: "请补充你的专业背景。",
-          specialties: ["待完善"],
-          slots: [],
+          price: application.price,
+          intro: application.intro,
+          background: application.background,
+          specialties: application.specialties,
+          slots: application.slots,
         },
       ],
     }));
@@ -626,7 +629,8 @@ export function App() {
             reviews={store.reviews}
             users={store.users}
             withdrawals={store.withdrawals}
-            onApply={() => applyCoach()}
+            currentUser={currentUser}
+            onApply={applyCoach}
             onUpdateCoach={updateCoach}
             onAddSlot={addSlot}
             onUpdateSlot={updateSlot}
@@ -964,6 +968,7 @@ function UserDesk({
 
 function CoachDesk({
   coach,
+  currentUser,
   bookings,
   reviews,
   users,
@@ -977,11 +982,15 @@ function CoachDesk({
   onBookingStatus,
 }: {
   coach?: Coach;
+  currentUser: User;
   bookings: Booking[];
   reviews: Review[];
   users: User[];
   withdrawals: Withdrawal[];
-  onApply: () => void;
+  onApply: (
+    application: Pick<Coach, "name" | "title" | "price" | "intro" | "background" | "specialties" | "slots">,
+    status?: CoachStatus,
+  ) => void;
   onUpdateCoach: (coachId: string, patch: Partial<Coach>) => void;
   onAddSlot: (coachId: string) => void;
   onUpdateSlot: (coachId: string, slotId: string, patch: Partial<Slot>) => void;
@@ -992,15 +1001,7 @@ function CoachDesk({
   if (!coach) {
     return (
       <section className="workspace">
-        <div className="panel empty-state">
-          <UserRoundCheck size={42} />
-          <h1>申请成为教练</h1>
-          <p>提交后需要管理员审核，通过后才能设置价格、时间和提现。</p>
-          <button className="primary" onClick={onApply}>
-            <Plus size={18} />
-            提交教练申请
-          </button>
-        </div>
+        <CoachApplicationForm currentUser={currentUser} onSubmit={onApply} />
       </section>
     );
   }
@@ -1025,11 +1026,11 @@ function CoachDesk({
         <div className="section-title">
           <div>
             <h1>教练中心</h1>
-            <p>审核通过后，用户才能看到你的主页并预约。</p>
+            <p>审核通过后，用户才能看到你的主页并预约。审核中也可以继续修改申请资料。</p>
           </div>
           <span className={`pill ${coach.status}`}>{coachStatusText[coach.status]}</span>
         </div>
-        <EditableCoach coach={coach} onUpdate={onUpdateCoach} disabled={coach.status !== "approved"} />
+        <EditableCoach coach={coach} onUpdate={onUpdateCoach} disabled={false} />
       </div>
 
       <div className="detail-stack">
@@ -1055,12 +1056,12 @@ function CoachDesk({
               <h2>可预约时间</h2>
               <p>当前 MVP 限定周三或周四下午，由教练自己维护。</p>
             </div>
-            <button className="ghost" disabled={coach.status !== "approved"} onClick={() => onAddSlot(coach.id)}>
+            <button className="ghost" onClick={() => onAddSlot(coach.id)}>
               <Plus size={17} />
               添加
             </button>
           </div>
-          <SlotEditor coach={coach} onUpdate={onUpdateSlot} onRemove={onRemoveSlot} disabled={coach.status !== "approved"} />
+          <SlotEditor coach={coach} onUpdate={onUpdateSlot} onRemove={onRemoveSlot} disabled={false} />
         </div>
 
         <div className="panel">
@@ -1249,6 +1250,208 @@ function AdminDesk({
         </div>
       </div>
     </section>
+  );
+}
+
+function CoachApplicationForm({
+  currentUser,
+  onSubmit,
+}: {
+  currentUser: User;
+  onSubmit: (
+    application: Pick<Coach, "name" | "title" | "price" | "intro" | "background" | "specialties" | "slots">,
+    status?: CoachStatus,
+  ) => void;
+}) {
+  const [draft, setDraft] = useState<
+    Pick<Coach, "name" | "title" | "price" | "intro" | "background" | "specialties" | "slots">
+  >({
+    name: currentUser.nickname || currentUser.name,
+    title: "",
+    price: 399,
+    intro: "",
+    background: "",
+    specialties: [],
+    slots: [
+      {
+        id: makeId("s"),
+        weekday: "周三",
+        date: "2026-05-27",
+        time: "14:00-15:00",
+        enabled: true,
+      },
+    ],
+  });
+  const specialtyText = draft.specialties.join("，");
+  const canSubmit =
+    draft.name.trim() &&
+    draft.title.trim() &&
+    draft.intro.trim() &&
+    draft.background.trim() &&
+    draft.price > 0 &&
+    draft.slots.some((slot) => slot.enabled && slot.date && slot.time.trim());
+
+  const updateSlotDraft = (slotId: string, patch: Partial<Slot>) => {
+    setDraft({
+      ...draft,
+      slots: draft.slots.map((slot) => (slot.id === slotId ? { ...slot, ...patch } : slot)),
+    });
+  };
+
+  return (
+    <div className="panel application-panel">
+      <div className="section-title">
+        <div>
+          <h1>申请成为教练</h1>
+          <p>先完善展示资料、价格和可预约时间，再提交给管理员审核。</p>
+        </div>
+        <UserRoundCheck size={32} />
+      </div>
+      <div className="form-grid">
+        <label className="field">
+          <span>展示名称</span>
+          <input
+            value={draft.name}
+            onChange={(event) => setDraft({ ...draft, name: event.target.value })}
+            placeholder="用户看到的教练名称"
+          />
+        </label>
+        <label className="field">
+          <span>单次价格</span>
+          <input
+            type="number"
+            min="1"
+            value={draft.price}
+            onChange={(event) => setDraft({ ...draft, price: Number(event.target.value) })}
+          />
+        </label>
+        <label className="field full-field">
+          <span>标题</span>
+          <input
+            value={draft.title}
+            onChange={(event) => setDraft({ ...draft, title: event.target.value })}
+            placeholder="例如：职业转型与管理沟通教练"
+          />
+        </label>
+        <label className="field full-field">
+          <span>教练介绍</span>
+          <textarea
+            value={draft.intro}
+            onChange={(event) => setDraft({ ...draft, intro: event.target.value })}
+            placeholder="说明你适合帮助什么样的用户、解决什么问题"
+          />
+        </label>
+        <label className="field full-field">
+          <span>背景介绍</span>
+          <textarea
+            value={draft.background}
+            onChange={(event) => setDraft({ ...draft, background: event.target.value })}
+            placeholder="说明你的工作经历、项目经验、资质或代表成果"
+          />
+        </label>
+        <label className="field full-field">
+          <span>特长，用逗号分隔</span>
+          <input
+            value={specialtyText}
+            onChange={(event) =>
+              setDraft({
+                ...draft,
+                specialties: event.target.value
+                  .split(/[，,]/)
+                  .map((item) => item.trim())
+                  .filter(Boolean),
+              })
+            }
+            placeholder="职业规划，面试辅导，管理沟通"
+          />
+        </label>
+      </div>
+
+      <div className="section-title compact application-slots-title">
+        <div>
+          <h2>可预约时间</h2>
+          <p>至少开放一个周三或周四下午的对话时间。</p>
+        </div>
+        <button
+          className="ghost"
+          onClick={() =>
+            setDraft({
+              ...draft,
+              slots: [
+                ...draft.slots,
+                {
+                  id: makeId("s"),
+                  weekday: "周三",
+                  date: "2026-05-27",
+                  time: "14:00-15:00",
+                  enabled: true,
+                },
+              ],
+            })
+          }
+        >
+          <Plus size={17} />
+          添加时间
+        </button>
+      </div>
+      <div className="slot-editor">
+        {draft.slots.map((slot) => (
+          <div key={slot.id} className="slot-edit-row">
+            <select
+              value={slot.weekday}
+              onChange={(event) => updateSlotDraft(slot.id, { weekday: event.target.value as Slot["weekday"] })}
+            >
+              <option value="周三">周三</option>
+              <option value="周四">周四</option>
+            </select>
+            <input
+              type="date"
+              value={slot.date}
+              onChange={(event) => updateSlotDraft(slot.id, { date: event.target.value })}
+            />
+            <input
+              value={slot.time}
+              onChange={(event) => updateSlotDraft(slot.id, { time: event.target.value })}
+              placeholder="14:00-15:00"
+            />
+            <label className="mini-check">
+              <input
+                type="checkbox"
+                checked={slot.enabled}
+                onChange={(event) => updateSlotDraft(slot.id, { enabled: event.target.checked })}
+              />
+              开放
+            </label>
+            <button
+              className="icon-danger"
+              disabled={draft.slots.length <= 1}
+              onClick={() => setDraft({ ...draft, slots: draft.slots.filter((item) => item.id !== slot.id) })}
+              aria-label="删除时间"
+            >
+              <Trash2 size={16} />
+            </button>
+          </div>
+        ))}
+      </div>
+      <button
+        className="primary full application-submit"
+        disabled={!canSubmit}
+        onClick={() =>
+          onSubmit({
+            ...draft,
+            name: draft.name.trim(),
+            title: draft.title.trim(),
+            intro: draft.intro.trim(),
+            background: draft.background.trim(),
+            specialties: draft.specialties.length ? draft.specialties : ["综合教练"],
+            slots: draft.slots.map((slot) => ({ ...slot, time: slot.time.trim() })),
+          })
+        }
+      >
+        <Plus size={18} />
+        提交教练申请
+      </button>
+    </div>
   );
 }
 

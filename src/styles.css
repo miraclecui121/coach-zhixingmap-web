@@ -594,6 +594,19 @@ p {
   text-align: center;
 }
 
+.application-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.application-slots-title {
+  margin-top: 4px;
+}
+
+.application-submit {
+  justify-self: stretch;
+}
+
 .pill {
   border-radius: 999px;
   display: inline-flex;

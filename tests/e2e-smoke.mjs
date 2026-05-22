@@ -77,13 +77,26 @@ async function main() {
     await page.locator(".current-account").filter({ hasText: "测试教练" }).waitFor();
     await clickText(page, "教练中心");
     await page.getByRole("heading", { name: "申请成为教练" }).waitFor();
+    await page.getByLabel("展示名称").fill("测试教练");
+    await page.getByLabel("单次价格").fill("499");
+    await page.getByLabel("标题").fill("申请阶段填写的教练标题");
+    await page.getByLabel("教练介绍").fill("这是提交审核前填写的教练介绍。");
+    await page.getByLabel("背景介绍").fill("这是提交审核前填写的背景介绍。");
+    await page.getByLabel("特长，用逗号分隔").fill("职业规划，表达训练");
+    await page.locator(".slot-edit-row").last().locator("input[type='date']").fill("2026-05-28");
+    await page.locator(".slot-edit-row").last().locator("input").nth(1).fill("14:30-15:30");
     await clickText(page, "提交教练申请");
     await page.waitForFunction(() => {
       return fetch("/api/store")
         .then((response) => response.json())
         .then((state) =>
           state.coaches.some(
-            (coach) => coach.name === "测试教练" && coach.status === "pending",
+            (coach) =>
+              coach.name === "测试教练" &&
+              coach.status === "pending" &&
+              coach.title === "申请阶段填写的教练标题" &&
+              coach.price === 499 &&
+              coach.slots.some((slot) => slot.date === "2026-05-28" && slot.time === "14:30-15:30"),
           ),
         );
     });
