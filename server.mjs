@@ -13,8 +13,8 @@ const dataFile =
   process.env.DATA_FILE || path.join(__dirname, "data", "store.json");
 const adminName = process.env.ADMIN_NAME || "管理员";
 const adminPhone = process.env.ADMIN_PHONE || "admin";
-const oauthSessions = new Map();
-const oauthStates = new Map();
+const sessionMaxAgeSeconds = 30 * 24 * 60 * 60;
+const oauthStateMaxAgeMs = 10 * 60 * 1000;
 
 const seedStore = {
   users: [
@@ -423,6 +423,16 @@ function authConfigStatus() {
   };
 }
 
+function getPublicOrigin(request) {
+  const proto = String(request.headers["x-forwarded-proto"] || request.protocol || "http")
+    .split(",")[0]
+    .trim();
+  const host = String(request.headers["x-forwarded-host"] || request.headers.host || "")
+    .split(",")[0]
+    .trim();
+  return host ? `${proto}://${host}` : "";
+}
+
 function parseCookies(header = "") {
   return Object.fromEntries(
     header
@@ -440,38 +450,139 @@ function parseCookies(header = "") {
   );
 }
 
-function setSessionCookie(response, userId) {
-  const sessionId = randomString(48);
-  oauthSessions.set(sessionId, {
-    userId,
-    createdAt: Date.now(),
-  });
+function base64UrlEncode(value) {
+  return Buffer.from(value, "utf8").toString("base64url");
+}
+
+function base64UrlDecode(value) {
+  return Buffer.from(value, "base64url").toString("utf8");
+}
+
+function getSigningSecret() {
+  return (
+    process.env.SESSION_SECRET ||
+    process.env.WECHAT_OAUTH_SECRET ||
+    process.env.WECHAT_PAY_API_V3_KEY ||
+    "coach-marketplace-local-dev-secret"
+  );
+}
+
+function signValue(value, bytes = 18) {
+  return crypto
+    .createHmac("sha256", getSigningSecret())
+    .update(value)
+    .digest("base64url")
+    .slice(0, bytes);
+}
+
+function timingSafeEqualText(left, right) {
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+  return (
+    leftBuffer.length === rightBuffer.length &&
+    crypto.timingSafeEqual(leftBuffer, rightBuffer)
+  );
+}
+
+function appendSetCookie(response, cookie) {
+  const current = response.getHeader("Set-Cookie");
+  if (!current) {
+    response.setHeader("Set-Cookie", cookie);
+    return;
+  }
   response.setHeader(
     "Set-Cookie",
-    `coach_session=${encodeURIComponent(sessionId)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`,
+    Array.isArray(current) ? [...current, cookie] : [current, cookie],
+  );
+}
+
+function secureCookieSuffix() {
+  return process.env.NODE_ENV === "production" ? "; Secure" : "";
+}
+
+function sanitizeRedirect(value) {
+  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) {
+    return "/";
+  }
+  return value;
+}
+
+function createSignedSession(userId) {
+  const encodedUserId = base64UrlEncode(userId);
+  const issuedAt = Date.now().toString(36);
+  const payload = `${encodedUserId}.${issuedAt}`;
+  return `${payload}.${signValue(payload)}`;
+}
+
+function readSignedSession(value) {
+  if (!value) return "";
+  const [encodedUserId, issuedAt, signature] = value.split(".");
+  if (!encodedUserId || !issuedAt || !signature) return "";
+  const payload = `${encodedUserId}.${issuedAt}`;
+  if (!timingSafeEqualText(signValue(payload), signature)) return "";
+  const issuedAtMs = Number.parseInt(issuedAt, 36);
+  if (!Number.isFinite(issuedAtMs)) return "";
+  if (Date.now() - issuedAtMs > sessionMaxAgeSeconds * 1000) return "";
+  try {
+    return base64UrlDecode(encodedUserId);
+  } catch {
+    return "";
+  }
+}
+
+function createOAuthState() {
+  const nonce = randomString(16);
+  const issuedAt = Date.now().toString(36);
+  const payload = `${nonce}.${issuedAt}`;
+  return `${payload}.${signValue(payload)}`;
+}
+
+function isValidOAuthState(value) {
+  if (typeof value !== "string") return false;
+  const [nonce, issuedAt, signature] = value.split(".");
+  if (!nonce || !issuedAt || !signature) return false;
+  const payload = `${nonce}.${issuedAt}`;
+  if (!timingSafeEqualText(signValue(payload), signature)) return false;
+  const issuedAtMs = Number.parseInt(issuedAt, 36);
+  return Number.isFinite(issuedAtMs) && Date.now() - issuedAtMs <= oauthStateMaxAgeMs;
+}
+
+function createSignedRedirectCookie(redirect) {
+  const safeRedirect = sanitizeRedirect(redirect);
+  const encodedRedirect = base64UrlEncode(safeRedirect);
+  const payload = encodedRedirect;
+  return `${payload}.${signValue(payload)}`;
+}
+
+function readSignedRedirectCookie(value) {
+  if (!value) return "/";
+  const [encodedRedirect, signature] = value.split(".");
+  if (!encodedRedirect || !signature) return "/";
+  if (!timingSafeEqualText(signValue(encodedRedirect), signature)) return "/";
+  try {
+    return sanitizeRedirect(base64UrlDecode(encodedRedirect));
+  } catch {
+    return "/";
+  }
+}
+
+function setSessionCookie(response, userId) {
+  appendSetCookie(
+    response,
+    `coach_session=${encodeURIComponent(createSignedSession(userId))}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${sessionMaxAgeSeconds}${secureCookieSuffix()}`,
   );
 }
 
 function clearSessionCookie(request, response) {
-  const cookies = parseCookies(request.headers.cookie);
-  if (cookies.coach_session) oauthSessions.delete(cookies.coach_session);
-  response.setHeader(
-    "Set-Cookie",
-    "coach_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0",
+  appendSetCookie(
+    response,
+    `coach_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secureCookieSuffix()}`,
   );
 }
 
 function getSessionUserId(request) {
   const cookies = parseCookies(request.headers.cookie);
-  const session = cookies.coach_session
-    ? oauthSessions.get(cookies.coach_session)
-    : undefined;
-  if (!session) return "";
-  if (Date.now() - session.createdAt > 30 * 24 * 60 * 60 * 1000) {
-    oauthSessions.delete(cookies.coach_session);
-    return "";
-  }
-  return session.userId;
+  return readSignedSession(cookies.coach_session);
 }
 
 function pickAvatarColor(seed) {
@@ -701,11 +812,13 @@ app.get("/api/auth/wechat/start", (request, response) => {
     return;
   }
 
-  const state = randomString(24);
-  oauthStates.set(state, {
-    redirect: typeof request.query.redirect === "string" ? request.query.redirect : "/",
-    createdAt: Date.now(),
-  });
+  const state = createOAuthState();
+  appendSetCookie(
+    response,
+    `coach_oauth_redirect=${encodeURIComponent(
+      createSignedRedirectCookie(request.query.redirect),
+    )}; Path=/api/auth/wechat; HttpOnly; SameSite=Lax; Max-Age=600${secureCookieSuffix()}`,
+  );
 
   const authorizeUrl = new URL("https://open.weixin.qq.com/connect/oauth2/authorize");
   authorizeUrl.searchParams.set("appid", process.env.WECHAT_OAUTH_APPID);
@@ -721,11 +834,19 @@ app.get("/api/auth/wechat/start", (request, response) => {
 
 app.get("/api/auth/wechat/callback", async (request, response) => {
   const { code, state } = request.query;
-  const stateRecord = typeof state === "string" ? oauthStates.get(state) : undefined;
-  oauthStates.delete(state);
+  const cookies = parseCookies(request.headers.cookie);
+  const redirect = readSignedRedirectCookie(cookies.coach_oauth_redirect);
+  appendSetCookie(
+    response,
+    `coach_oauth_redirect=; Path=/api/auth/wechat; HttpOnly; SameSite=Lax; Max-Age=0${secureCookieSuffix()}`,
+  );
 
-  if (!stateRecord || Date.now() - stateRecord.createdAt > 10 * 60 * 1000) {
-    response.status(400).send("微信授权 state 已过期，请重新登录。");
+  if (!isValidOAuthState(state)) {
+    response
+      .status(400)
+      .send(
+        '微信授权状态已失效，请返回首页重新登录。<p><a href="/">返回首页</a></p>',
+      );
     return;
   }
   if (typeof code !== "string" || !code) {
@@ -737,7 +858,7 @@ app.get("/api/auth/wechat/callback", async (request, response) => {
     const profile = await exchangeWechatCode(code);
     const user = await upsertWechatUser(profile);
     setSessionCookie(response, user.id);
-    response.redirect(stateRecord.redirect || "/");
+    response.redirect(redirect);
   } catch (error) {
     response.status(502).send(`微信授权失败：${error.message}`);
   }
@@ -790,10 +911,24 @@ app.post("/api/auth/dev-login", async (request, response) => {
   response.json({ user });
 });
 
-app.get("/api/payment-config", (_request, response) => {
+app.get("/api/payment-config", (request, response) => {
+  const publicOrigin = getPublicOrigin(request);
   response.json({
     ...paymentConfigStatus(),
     allowMock: process.env.ALLOW_MOCK_PAYMENT === "true",
+    suggestedNotifyUrl: publicOrigin
+      ? `${publicOrigin}/api/payments/wechat/notify`
+      : "/api/payments/wechat/notify",
+    merchantPortalUrl: "https://pay.weixin.qq.com/",
+    requiredEnv: [
+      "WECHAT_PAY_APPID",
+      "WECHAT_PAY_MCH_ID",
+      "WECHAT_PAY_SERIAL_NO",
+      "WECHAT_PAY_API_V3_KEY",
+      "WECHAT_PAY_PRIVATE_KEY",
+      "WECHAT_PAY_NOTIFY_URL",
+      "WECHAT_PAY_PLATFORM_PUBLIC_KEY",
+    ],
   });
 });
 

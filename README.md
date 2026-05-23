@@ -23,11 +23,14 @@ WECHAT_OAUTH_APPID=认证服务号 AppID
 WECHAT_OAUTH_SECRET=认证服务号 AppSecret
 WECHAT_OAUTH_CALLBACK_URL=https://你的公网域名/api/auth/wechat/callback
 WECHAT_OAUTH_SCOPE=snsapi_userinfo
+SESSION_SECRET=任意高强度随机字符串
 ADMIN_OPENID=你的管理员微信 openid
 BOOTSTRAP_FIRST_WECHAT_ADMIN=true
 ```
 
 在微信公众平台后台还需要把公网域名配置到“网页授权域名”。如果只想静默确认身份，可把 `WECHAT_OAUTH_SCOPE` 改为 `snsapi_base`，这样只能拿到 `openid`；如果要拿昵称头像，用默认的 `snsapi_userinfo`。
+
+微信授权 `state` 和登录会话使用签名校验，不依赖服务端内存；Render 冷启动或重启后不会因为内存丢失直接提示 state 过期。生产环境建议单独配置 `SESSION_SECRET`，不配置时会回退使用 `WECHAT_OAUTH_SECRET`。
 
 如果微信后台要求上传 `MP_verify_xxx.txt` 验证文件，可配置：
 
@@ -69,6 +72,8 @@ WECHAT_PAY_PLATFORM_PUBLIC_KEY_PATH=/path/to/wechatpay_public_key.pem
 也可以用 `WECHAT_PAY_PRIVATE_KEY` 和 `WECHAT_PAY_PLATFORM_PUBLIC_KEY` 直接传 PEM 内容。回调验签默认必须配置微信支付平台公钥；仅测试环境可设置 `WECHAT_PAY_SKIP_NOTIFY_VERIFY=true`。
 
 在微信支付参数未配置前，用户支付弹窗会显示“已付款，提交平台确认”。订单进入“待平台确认收款”后，管理员在“订单收款与流转”里点击“确认收款”，订单会继续进入“待教练确认”。这适合先用转账、人工核销或线下收款方式启动试运营；正式收款上线后再补齐上面的微信支付环境变量。
+
+管理员后台的“微信支付配置”面板会显示网页登录入口、推荐支付回调地址、缺失环境变量和逐步配置清单。配置时先登录 [微信支付商户平台](https://pay.weixin.qq.com/)，再把商户号、API v3 密钥、证书序列号、商户私钥、微信支付平台公钥和回调地址填到 Render Environment。
 
 ## 免费部署到 Render
 

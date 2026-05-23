@@ -6,6 +6,7 @@ import {
   CreditCard,
   Edit3,
   Eye,
+  ExternalLink,
   HandCoins,
   LayoutDashboard,
   MessageSquareText,
@@ -130,6 +131,15 @@ type AuthConfig = {
   missing: string[];
   scope: "snsapi_base" | "snsapi_userinfo" | string;
   allowDevLogin: boolean;
+};
+
+type PaymentConfig = {
+  configured: boolean;
+  missing: string[];
+  allowMock: boolean;
+  suggestedNotifyUrl: string;
+  merchantPortalUrl: string;
+  requiredEnv: string[];
 };
 
 const storageKey = "coach-marketplace-h5-store";
@@ -1227,6 +1237,8 @@ function AdminDesk({
         </button>
       </div>
 
+      <PaymentSetupPanel />
+
       <div className="panel">
         <h2>用户注册</h2>
         <div className="simple-list">
@@ -1328,6 +1340,70 @@ function AdminDesk({
         </div>
       </div>
     </section>
+  );
+}
+
+function PaymentSetupPanel() {
+  const [config, setConfig] = useState<PaymentConfig | null>(null);
+
+  useEffect(() => {
+    fetch("/api/payment-config")
+      .then((response) => response.json() as Promise<PaymentConfig>)
+      .then(setConfig)
+      .catch(() => undefined);
+  }, []);
+
+  return (
+    <div className="panel payment-setup-panel">
+      <div className="section-title compact">
+        <div>
+          <h2>微信支付配置</h2>
+          <p>先用人工收款确认试运营；商户资料补齐后，这里会自动切换为扫码支付。</p>
+        </div>
+        <CreditCard size={24} />
+      </div>
+      {!config && <p className="muted">正在读取支付配置...</p>}
+      {config && (
+        <>
+          <span className={`pill ${config.configured ? "approved" : "pending"}`}>
+            {config.configured ? "微信支付已配置" : "微信支付未配置"}
+          </span>
+          {!config.configured && (
+            <div className="payment-setup-steps">
+              <a
+                className="primary link-button full"
+                href={config.merchantPortalUrl}
+                target="_blank"
+                rel="noreferrer"
+              >
+                <ExternalLink size={17} />
+                登录微信支付商户平台
+              </a>
+              <ol>
+                <li>用商户管理员微信扫码登录，确认商户号、绑定的公众号 AppID，并开通 Native 支付。</li>
+                <li>进入“账户中心 / API 安全”，设置 API v3 密钥，下载商户 API 证书并复制私钥内容。</li>
+                <li>获取商户 API 证书序列号，并下载或复制微信支付平台公钥。</li>
+                <li>到 Render 的 Environment 页面填入下方环境变量，然后重新部署服务。</li>
+              </ol>
+              <label className="field full-field">
+                <span>支付回调地址</span>
+                <input readOnly value={config.suggestedNotifyUrl} />
+              </label>
+              <div className="env-list">
+                {config.requiredEnv.map((item) => (
+                  <code key={item} className={config.missing.some((missing) => missing.includes(item)) ? "missing-env" : ""}>
+                    {item}
+                  </code>
+                ))}
+              </div>
+              <small className="muted">
+                当前缺少：{config.missing.length ? config.missing.join("、") : "无"}
+              </small>
+            </div>
+          )}
+        </>
+      )}
+    </div>
   );
 }
 

@@ -958,6 +958,45 @@ p {
   margin-bottom: 0;
 }
 
+.payment-setup-panel {
+  align-content: start;
+}
+
+.payment-setup-steps {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.payment-setup-steps ol {
+  color: #52625c;
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding-left: 20px;
+}
+
+.env-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.env-list code {
+  background: #eef4f1;
+  border: 1px solid #d5dfda;
+  border-radius: 6px;
+  color: #274d45;
+  font-size: 12px;
+  padding: 6px 8px;
+}
+
+.env-list code.missing-env {
+  background: #fff7df;
+  border-color: #f0d58a;
+  color: #704d00;
+}
+
 .payment-warning p {
   margin-bottom: 0;
 }

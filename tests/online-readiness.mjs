@@ -22,6 +22,19 @@ assert(health.response.ok && health.body.ok === true, "线上健康检查失败"
 const paymentConfig = await readJson("/api/payment-config");
 assert(paymentConfig.response.ok, "支付配置接口不可用");
 assert(paymentConfig.body.allowMock === false, "线上不应开启测试支付");
+assert(
+  paymentConfig.body.merchantPortalUrl === "https://pay.weixin.qq.com/",
+  "微信支付网页登录入口未上线",
+);
+assert(
+  paymentConfig.body.suggestedNotifyUrl === `${appUrl}/api/payments/wechat/notify`,
+  "微信支付推荐回调地址异常",
+);
+assert(
+  Array.isArray(paymentConfig.body.requiredEnv) &&
+    paymentConfig.body.requiredEnv.includes("WECHAT_PAY_MCH_ID"),
+  "微信支付配置清单未上线",
+);
 
 const storeResult = await readJson("/api/store");
 assert(storeResult.response.ok, "线上 store 接口不可用");

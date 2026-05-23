@@ -29,6 +29,9 @@ async function startServer() {
       DATA_FILE: dataFile,
       ALLOW_RESET: "true",
       ALLOW_DEV_LOGIN: "true",
+      WECHAT_OAUTH_APPID: "test-appid",
+      WECHAT_OAUTH_SECRET: "test-oauth-secret",
+      WECHAT_OAUTH_CALLBACK_URL: `${appUrl}api/auth/wechat/callback`,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -66,6 +69,29 @@ async function main() {
       body: JSON.stringify(seedState),
     });
     assert(unauthWrite.status === 401, "未登录请求不应能写入共享 store");
+    const oauthStart = await fetch(`${appUrl}api/auth/wechat/start?redirect=/`, {
+      redirect: "manual",
+    });
+    assert(oauthStart.status === 302, "微信授权入口应重定向到微信 OAuth");
+    const authorizeLocation = oauthStart.headers.get("location") || "";
+    const authorizeUrl = new URL(authorizeLocation.replace("#wechat_redirect", ""));
+    const signedState = authorizeUrl.searchParams.get("state");
+    assert(signedState, "微信授权 URL 应包含 state");
+    const oauthCallback = await fetch(
+      `${appUrl}api/auth/wechat/callback?state=${encodeURIComponent(signedState)}`,
+      {
+        headers: {
+          cookie: oauthStart.headers.get("set-cookie") || "",
+        },
+        redirect: "manual",
+      },
+    );
+    const callbackText = await oauthCallback.text();
+    assert(oauthCallback.status === 400, "缺少 code 的微信回调应返回 400");
+    assert(
+      callbackText.includes("微信授权回调缺少 code"),
+      "有效 state 不应被误判为已过期",
+    );
 
     await page.goto(appUrl, { waitUntil: "networkidle" });
 
@@ -113,6 +139,15 @@ async function main() {
     await page.locator(".current-account").filter({ hasText: "管理员" }).waitFor();
     await clickText(page, "管理后台");
     await page.getByRole("heading", { name: "管理后台" }).waitFor();
+    await page.getByText("微信支付配置").waitFor();
+    await page.getByRole("link", { name: "登录微信支付商户平台" }).waitFor();
+    await page.waitForFunction(
+      (value) =>
+        Array.from(document.querySelectorAll("input")).some(
+          (input) => input.value === value,
+        ),
+      `${appUrl.replace(/\/$/, "")}/api/payments/wechat/notify`,
+    );
     await page
       .locator(".admin-row")
       .filter({ hasText: "测试教练" })
