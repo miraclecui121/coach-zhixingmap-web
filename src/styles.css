@@ -658,7 +658,8 @@ p {
   color: #087443;
 }
 
-.pill.pending {
+.pill.pending,
+.pill.payment_pending {
   background: #fff7df;
   color: #906100;
 }
@@ -695,6 +696,10 @@ p {
   display: grid;
   gap: 10px;
   grid-template-columns: repeat(auto-fit, minmax(138px, 1fr));
+}
+
+.backup-link {
+  margin-top: 14px;
 }
 
 .metric {
@@ -838,6 +843,15 @@ p {
   grid-template-columns: 46px minmax(150px, 1fr) auto 140px minmax(190px, auto) 40px;
 }
 
+.admin-order-table {
+  display: grid;
+  gap: 10px;
+}
+
+.admin-order-row {
+  grid-template-columns: 46px minmax(220px, 1fr) auto auto minmax(120px, auto);
+}
+
 .admin-row label {
   align-items: center;
   display: flex;
@@ -927,6 +941,21 @@ p {
   gap: 6px;
   padding: 12px;
   text-align: left;
+}
+
+.payment-success {
+  background: #e7f7ef;
+  border: 1px solid #a9ddc3;
+  border-radius: 8px;
+  color: #087443;
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  text-align: left;
+}
+
+.payment-success p {
+  margin-bottom: 0;
 }
 
 .payment-warning p {

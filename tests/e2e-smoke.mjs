@@ -28,7 +28,6 @@ async function startServer() {
       PORT: String(port),
       DATA_FILE: dataFile,
       ALLOW_RESET: "true",
-      ALLOW_MOCK_PAYMENT: "true",
       ALLOW_DEV_LOGIN: "true",
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -60,6 +59,14 @@ async function main() {
 
   try {
     await fetch(`${appUrl}api/reset`, { method: "POST" });
+    const seedState = await fetch(`${appUrl}api/store`).then((response) => response.json());
+    const unauthWrite = await fetch(`${appUrl}api/store`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(seedState),
+    });
+    assert(unauthWrite.status === 401, "未登录请求不应能写入共享 store");
+
     await page.goto(appUrl, { waitUntil: "networkidle" });
 
     await page.getByText("教练预约商城 H5").waitFor();
@@ -140,12 +147,44 @@ async function main() {
     await clickText(page, "开发注册");
     await page.locator(".current-account").filter({ hasText: "测试用户" }).waitFor();
     await page.locator(".coach-card").filter({ hasText: "真实环境测试教练" }).waitFor();
+    const blockedAdminMutation = await page.evaluate(async () => {
+      const state = await fetch("/api/store").then((response) => response.json());
+      const response = await fetch("/api/store", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...state,
+          settings: { ...state.settings, commissionRate: 0 },
+        }),
+      });
+      return response.status;
+    });
+    assert(blockedAdminMutation === 403, "普通用户不应能篡改平台设置");
+
     await page.locator(".slot-card").filter({ hasText: "预约并支付" }).first().click();
     await page.getByRole("heading", { name: "确认预约" }).waitFor();
     await clickText(page, "确认并进入支付");
-    await page.getByRole("heading", { name: "微信扫码支付" }).waitFor();
+    await page.getByRole("heading", { name: "支付确认" }).waitFor();
     await page.getByText("微信支付尚未配置").waitFor();
-    await clickText(page, "测试环境标记支付成功");
+    await clickText(page, "已付款，提交平台确认");
+    await page.getByText("已提交平台确认").waitFor();
+    await page.getByLabel("关闭").click();
+    await page.getByText("待平台确认收款").waitFor();
+
+    await clickText(page, "退出");
+    await login("admin");
+    await page.locator(".current-account").filter({ hasText: "管理员" }).waitFor();
+    await clickText(page, "管理后台");
+    await page.getByText("订单收款与流转").waitFor();
+    await page
+      .locator(".admin-order-row")
+      .filter({ hasText: "测试用户 预约 测试教练" })
+      .getByRole("button", { name: "确认收款" })
+      .click();
+
+    await clickText(page, "退出");
+    await login("user-openid");
+    await page.locator(".current-account").filter({ hasText: "测试用户" }).waitFor();
     await page.getByText("待教练确认").waitFor();
     const noteText = "想重点聊转型路径和行动计划。";
     await page.getByPlaceholder("给教练捎句话").fill(noteText);
@@ -198,6 +237,23 @@ async function main() {
       .filter({ hasText: "测试教练" })
       .getByRole("button", { name: "通过", exact: true })
       .click();
+    const backup = await page.evaluate(async () => {
+      const response = await fetch("/api/admin/export");
+      return {
+        ok: response.ok,
+        disposition: response.headers.get("content-disposition") || "",
+        data: await response.json(),
+      };
+    });
+    assert(backup.ok, "管理员应能导出数据备份");
+    assert(
+      backup.disposition.includes("coach-marketplace-backup"),
+      "数据备份应带下载文件名",
+    );
+    assert(
+      backup.data.bookings.some((booking) => booking.status === "reviewed"),
+      "数据备份应包含当前订单数据",
+    );
     await page.getByRole("button", { name: /提取平台扣点/ }).click();
     await page
       .locator(".admin-row")

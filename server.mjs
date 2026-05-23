@@ -109,6 +109,282 @@ function validateStore(store) {
   );
 }
 
+function sameJson(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function byId(items = []) {
+  return new Map(items.map((item) => [item.id, item]));
+}
+
+function changedIds(before = [], after = []) {
+  const beforeMap = byId(before);
+  const afterMap = byId(after);
+  const added = after.filter((item) => !beforeMap.has(item.id));
+  const removed = before.filter((item) => !afterMap.has(item.id));
+  const updated = after.filter((item) => {
+    const oldItem = beforeMap.get(item.id);
+    return oldItem && !sameJson(oldItem, item);
+  });
+  return { added, removed, updated };
+}
+
+function sameCollectionExcept(before = [], after = [], ids = []) {
+  const allowed = new Set(ids);
+  const beforeMap = byId(before);
+  const afterMap = byId(after);
+  if (beforeMap.size !== afterMap.size) return false;
+  for (const [id, beforeItem] of beforeMap) {
+    if (!afterMap.has(id)) return false;
+    if (!allowed.has(id) && !sameJson(beforeItem, afterMap.get(id))) return false;
+  }
+  return true;
+}
+
+function getCoachForUser(store, userId) {
+  return store.coaches.find((coach) => coach.userId === userId);
+}
+
+function getCompletedIncome(store, coachId) {
+  return store.bookings
+    .filter(
+      (booking) =>
+        booking.coachId === coachId &&
+        (booking.status === "completed" || booking.status === "reviewed"),
+    )
+    .reduce((sum, booking) => sum + Number(booking.coachIncome || 0), 0);
+}
+
+function getPaidOut(store, coachId) {
+  return store.withdrawals
+    .filter(
+      (withdrawal) =>
+        (withdrawal.target ?? "coach") === "coach" &&
+        withdrawal.coachId === coachId &&
+        withdrawal.status !== "rejected",
+    )
+    .reduce((sum, withdrawal) => sum + Number(withdrawal.amount || 0), 0);
+}
+
+function isAllowedCoachApplication(currentStore, nextStore, user) {
+  const coachDiff = changedIds(currentStore.coaches, nextStore.coaches);
+  const userDiff = changedIds(currentStore.users, nextStore.users);
+  if (
+    coachDiff.added.length !== 1 ||
+    coachDiff.updated.length !== 0 ||
+    coachDiff.removed.length !== 0 ||
+    userDiff.added.length !== 0 ||
+    userDiff.removed.length !== 0 ||
+    userDiff.updated.length > 1
+  ) {
+    return false;
+  }
+
+  const newCoach = coachDiff.added[0];
+  if (
+    !newCoach ||
+    newCoach.userId !== user.id ||
+    newCoach.status !== "pending" ||
+    currentStore.coaches.some((coach) => coach.userId === user.id)
+  ) {
+    return false;
+  }
+
+  if (!sameCollectionExcept(currentStore.users, nextStore.users, [user.id])) {
+    return false;
+  }
+  const previousUser = currentStore.users.find((item) => item.id === user.id);
+  const nextUser = nextStore.users.find((item) => item.id === user.id);
+  if (!previousUser || !nextUser) return false;
+  return sameJson({ ...previousUser, coachId: newCoach.id }, nextUser);
+}
+
+function isAllowedOwnCoachUpdate(currentStore, nextStore, user) {
+  const currentCoach = getCoachForUser(currentStore, user.id);
+  if (!currentCoach) return false;
+  const nextCoach = nextStore.coaches.find((coach) => coach.id === currentCoach.id);
+  if (!nextCoach) return false;
+  if (
+    nextCoach.id !== currentCoach.id ||
+    nextCoach.userId !== currentCoach.userId ||
+    nextCoach.status !== currentCoach.status
+  ) {
+    return false;
+  }
+  return sameCollectionExcept(currentStore.coaches, nextStore.coaches, [currentCoach.id]);
+}
+
+function isAllowedBookingCreate(currentStore, nextStore, user) {
+  const bookingDiff = changedIds(currentStore.bookings, nextStore.bookings);
+  if (
+    bookingDiff.added.length !== 1 ||
+    bookingDiff.updated.length !== 0 ||
+    bookingDiff.removed.length !== 0
+  ) {
+    return false;
+  }
+  const booking = bookingDiff.added[0];
+  const coach = currentStore.coaches.find((item) => item.id === booking.coachId);
+  const slot = coach?.slots.find((item) => item.id === booking.slotId);
+  const platformFee = currentStore.settings.commissionEnabled
+    ? booking.amount * (currentStore.settings.commissionRate / 100)
+    : 0;
+  const occupied = currentStore.bookings.some(
+    (item) =>
+      item.coachId === booking.coachId &&
+      item.slotId === booking.slotId &&
+      item.status !== "declined",
+  );
+  return Boolean(
+    coach &&
+      slot?.enabled &&
+      !occupied &&
+      coach.status === "approved" &&
+      coach.userId !== user.id &&
+      booking.userId === user.id &&
+      booking.status === "reserved" &&
+      booking.amount === coach.price &&
+      Math.abs(booking.platformFee - platformFee) < 0.001 &&
+      Math.abs(booking.coachIncome - (booking.amount - platformFee)) < 0.001,
+  );
+}
+
+function isAllowedBookingNote(currentStore, nextStore, user) {
+  const bookingDiff = changedIds(currentStore.bookings, nextStore.bookings);
+  if (
+    bookingDiff.added.length !== 0 ||
+    bookingDiff.updated.length !== 1 ||
+    bookingDiff.removed.length !== 0
+  ) {
+    return false;
+  }
+  const nextBooking = bookingDiff.updated[0];
+  const currentBooking = currentStore.bookings.find((item) => item.id === nextBooking.id);
+  if (
+    !currentBooking ||
+    currentBooking.userId !== user.id ||
+    !["paid", "accepted"].includes(currentBooking.status) ||
+    nextBooking.status !== currentBooking.status
+  ) {
+    return false;
+  }
+  return sameJson({ ...currentBooking, note: nextBooking.note }, nextBooking);
+}
+
+function isAllowedReviewCreate(currentStore, nextStore, user) {
+  const reviewDiff = changedIds(currentStore.reviews, nextStore.reviews);
+  const bookingDiff = changedIds(currentStore.bookings, nextStore.bookings);
+  if (
+    reviewDiff.added.length !== 1 ||
+    reviewDiff.updated.length !== 0 ||
+    reviewDiff.removed.length !== 0 ||
+    bookingDiff.added.length !== 0 ||
+    bookingDiff.updated.length !== 1 ||
+    bookingDiff.removed.length !== 0
+  ) {
+    return false;
+  }
+  const review = reviewDiff.added[0];
+  const nextBooking = bookingDiff.updated[0];
+  const currentBooking = currentStore.bookings.find((item) => item.id === nextBooking.id);
+  return Boolean(
+    currentBooking &&
+      currentBooking.userId === user.id &&
+      currentBooking.status === "completed" &&
+      nextBooking.status === "reviewed" &&
+      sameJson({ ...currentBooking, status: "reviewed" }, nextBooking) &&
+      review.bookingId === currentBooking.id &&
+      review.userId === user.id &&
+      review.coachId === currentBooking.coachId &&
+      Number(review.rating) >= 1 &&
+      Number(review.rating) <= 5 &&
+      String(review.content || "").trim(),
+  );
+}
+
+function isAllowedCoachBookingStatus(currentStore, nextStore, user) {
+  const currentCoach = getCoachForUser(currentStore, user.id);
+  if (!currentCoach) return false;
+  const bookingDiff = changedIds(currentStore.bookings, nextStore.bookings);
+  if (
+    bookingDiff.added.length !== 0 ||
+    bookingDiff.updated.length !== 1 ||
+    bookingDiff.removed.length !== 0
+  ) {
+    return false;
+  }
+  const nextBooking = bookingDiff.updated[0];
+  const currentBooking = currentStore.bookings.find((item) => item.id === nextBooking.id);
+  if (!currentBooking || currentBooking.coachId !== currentCoach.id) return false;
+  const allowed =
+    (currentBooking.status === "paid" &&
+      (nextBooking.status === "accepted" || nextBooking.status === "declined")) ||
+    (currentBooking.status === "accepted" && nextBooking.status === "completed");
+  return allowed && sameJson({ ...currentBooking, status: nextBooking.status }, nextBooking);
+}
+
+function isAllowedCoachWithdrawal(currentStore, nextStore, user) {
+  const currentCoach = getCoachForUser(currentStore, user.id);
+  if (!currentCoach) return false;
+  const withdrawalDiff = changedIds(currentStore.withdrawals, nextStore.withdrawals);
+  if (
+    withdrawalDiff.added.length !== 1 ||
+    withdrawalDiff.updated.length !== 0 ||
+    withdrawalDiff.removed.length !== 0
+  ) {
+    return false;
+  }
+  const withdrawal = withdrawalDiff.added[0];
+  const withdrawable = Math.max(
+    0,
+    getCompletedIncome(currentStore, currentCoach.id) - getPaidOut(currentStore, currentCoach.id),
+  );
+  return Boolean(
+    withdrawal.target === "coach" &&
+      withdrawal.coachId === currentCoach.id &&
+      withdrawal.status === "pending" &&
+      withdrawal.amount > 0 &&
+      withdrawal.amount <= withdrawable,
+  );
+}
+
+function isAuthorizedStoreUpdate(currentStore, nextStore, user) {
+  if (!user) return false;
+  if (user.isAdmin) return true;
+  if (!sameJson(currentStore.settings, nextStore.settings)) return false;
+  if (!sameJson(currentStore.users, nextStore.users) && !isAllowedCoachApplication(currentStore, nextStore, user)) {
+    return false;
+  }
+  if (!sameJson(currentStore.coaches, nextStore.coaches)) {
+    if (
+      !isAllowedCoachApplication(currentStore, nextStore, user) &&
+      !isAllowedOwnCoachUpdate(currentStore, nextStore, user)
+    ) {
+      return false;
+    }
+  }
+  if (!sameJson(currentStore.bookings, nextStore.bookings)) {
+    if (
+      !isAllowedBookingCreate(currentStore, nextStore, user) &&
+      !isAllowedBookingNote(currentStore, nextStore, user) &&
+      !isAllowedReviewCreate(currentStore, nextStore, user) &&
+      !isAllowedCoachBookingStatus(currentStore, nextStore, user)
+    ) {
+      return false;
+    }
+  }
+  if (!sameJson(currentStore.reviews, nextStore.reviews) && !isAllowedReviewCreate(currentStore, nextStore, user)) {
+    return false;
+  }
+  if (
+    !sameJson(currentStore.withdrawals, nextStore.withdrawals) &&
+    !isAllowedCoachWithdrawal(currentStore, nextStore, user)
+  ) {
+    return false;
+  }
+  return true;
+}
+
 function paymentConfigStatus() {
   const required = {
     WECHAT_PAY_APPID: process.env.WECHAT_PAY_APPID,
@@ -388,6 +664,28 @@ app.get("/api/auth/me", async (request, response) => {
   response.json({ user: store.users.find((user) => user.id === userId) ?? null });
 });
 
+app.get("/api/admin/export", async (request, response) => {
+  const userId = getSessionUserId(request);
+  const store = await readStore();
+  const user = store.users.find((item) => item.id === userId);
+  if (!user) {
+    response.status(401).json({ error: "LOGIN_REQUIRED" });
+    return;
+  }
+  if (!user.isAdmin) {
+    response.status(403).json({ error: "ADMIN_REQUIRED" });
+    return;
+  }
+
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+  response.setHeader("Content-Type", "application/json; charset=utf-8");
+  response.setHeader(
+    "Content-Disposition",
+    `attachment; filename="coach-marketplace-backup-${stamp}.json"`,
+  );
+  response.send(JSON.stringify(store, null, 2));
+});
+
 app.post("/api/auth/logout", (request, response) => {
   clearSessionCookie(request, response);
   response.json({ ok: true });
@@ -601,9 +899,48 @@ app.post("/api/payments/mock-success", async (request, response) => {
   response.json({ ok: true });
 });
 
+app.post("/api/payments/manual-confirmation", async (request, response) => {
+  const store = await readStore();
+  const booking = store.bookings.find((item) => item.id === request.body.bookingId);
+
+  if (!booking) {
+    response.status(404).json({ error: "BOOKING_NOT_FOUND" });
+    return;
+  }
+
+  if (booking.status !== "reserved" && booking.status !== "payment_pending") {
+    response.status(409).json({ error: "BOOKING_NOT_PAYABLE" });
+    return;
+  }
+
+  store.bookings = store.bookings.map((item) =>
+    item.id === booking.id
+      ? {
+          ...item,
+          status: "payment_pending",
+          payment: {
+            provider: "manual_confirmation",
+            state: "pending",
+            outTradeNo: booking.payment?.outTradeNo || makeOutTradeNo(),
+            createdAt: booking.payment?.createdAt || new Date().toISOString(),
+          },
+        }
+      : item,
+  );
+  await writeStore(store);
+  response.json({ ok: true, store });
+});
+
 app.put("/api/store", async (request, response) => {
   if (!validateStore(request.body)) {
     response.status(400).json({ error: "Invalid store payload" });
+    return;
+  }
+  const currentStore = await readStore();
+  const userId = getSessionUserId(request);
+  const user = currentStore.users.find((item) => item.id === userId);
+  if (!isAuthorizedStoreUpdate(currentStore, request.body, user)) {
+    response.status(user ? 403 : 401).json({ error: "STORE_UPDATE_FORBIDDEN" });
     return;
   }
   await writeStore(request.body);
