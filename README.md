@@ -44,12 +44,13 @@ WECHAT_VERIFY_CONTENT=文件里的那一串验证内容
 
 ## 已实现流程
 
-- 用户查看教练、预约时间、模拟微信扫码支付、完成后评价
+- 用户查看教练、预约时间、微信扫码支付；未配置微信支付时可提交人工收款确认，管理员确认后继续流转
 - 教练维护介绍、价格、周三/周四下午可约时间、申请提现
 - 管理员审核教练、维护教练、查看用户、设置抽佣、审核提现
+- 管理员可在后台导出完整 JSON 数据备份，适合免费试运营阶段定期留档
 - 服务端共享数据存储，部署后同一环境内多个角色访问同一套数据
 - 微信公众号网页授权登录已接入服务端流程
-- 微信支付 Native 扫码支付接口已接入；未配置商户参数时会阻止支付并提示缺失项
+- 微信支付 Native 扫码支付接口已接入；未配置商户参数时自动提供人工收款确认兜底，不阻断上线试运营
 
 ## 微信支付配置
 
@@ -67,6 +68,8 @@ WECHAT_PAY_PLATFORM_PUBLIC_KEY_PATH=/path/to/wechatpay_public_key.pem
 
 也可以用 `WECHAT_PAY_PRIVATE_KEY` 和 `WECHAT_PAY_PLATFORM_PUBLIC_KEY` 直接传 PEM 内容。回调验签默认必须配置微信支付平台公钥；仅测试环境可设置 `WECHAT_PAY_SKIP_NOTIFY_VERIFY=true`。
 
+在微信支付参数未配置前，用户支付弹窗会显示“已付款，提交平台确认”。订单进入“待平台确认收款”后，管理员在“订单收款与流转”里点击“确认收款”，订单会继续进入“待教练确认”。这适合先用转账、人工核销或线下收款方式启动试运营；正式收款上线后再补齐上面的微信支付环境变量。
+
 ## 免费部署到 Render
 
 仓库已包含 `render.yaml`。部署步骤：
@@ -75,4 +78,26 @@ WECHAT_PAY_PLATFORM_PUBLIC_KEY_PATH=/path/to/wechatpay_public_key.pem
 2. 在 Render 创建 Blueprint，选择该仓库。
 3. Render 会使用 `npm install && npm run build` 构建，并用 `npm start` 启动。
 
-当前版本使用服务端 JSON 文件存储，适合试用环境。Render 免费实例重启或重新部署后数据可能回到种子数据；正式商业环境建议下一步接 Supabase/PostgreSQL。
+如果已经绑定 Render，更新上线流程是：
+
+```bash
+git push origin main
+```
+
+然后在 Render 后台点击 `Manual Deploy -> Deploy latest commit`。部署完成后运行：
+
+```bash
+npm run check:online
+```
+
+这个检查会确认线上健康接口、支付配置、人工收款确认接口、管理员备份接口保护，以及订单引用完整性。
+
+当前版本使用服务端 JSON 文件存储，适合试用环境。Render 免费实例默认文件系统是临时的，重启或重新部署后可能丢失本地写入数据；管理员应在试运营阶段定期从后台导出数据备份。
+
+如果要继续使用 JSON 文件并保留数据，需要把 Render 服务升级到支持 Persistent Disk 的付费实例，挂载例如 `/var/data`，并配置：
+
+```bash
+DATA_FILE=/var/data/store.json
+```
+
+正式商业环境建议下一步接 Supabase/PostgreSQL。

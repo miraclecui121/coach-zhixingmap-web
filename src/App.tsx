@@ -25,7 +25,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 type Role = "user" | "coach" | "admin";
 type CoachStatus = "pending" | "approved" | "rejected";
-type BookingStatus = "reserved" | "paid" | "accepted" | "declined" | "completed" | "reviewed";
+type BookingStatus =
+  | "reserved"
+  | "payment_pending"
+  | "paid"
+  | "accepted"
+  | "declined"
+  | "completed"
+  | "reviewed";
 type WithdrawalStatus = "pending" | "approved" | "rejected";
 
 type User = {
@@ -75,7 +82,7 @@ type Booking = {
   note?: string;
   createdAt: string;
   payment?: {
-    provider: "wechat_native";
+    provider: "wechat_native" | "manual_confirmation";
     state: "pending" | "paid";
     outTradeNo: string;
     codeUrl?: string;
@@ -149,6 +156,7 @@ const seedStore: Store = {
 
 const statusText: Record<BookingStatus, string> = {
   reserved: "待支付",
+  payment_pending: "待平台确认收款",
   paid: "待教练确认",
   accepted: "教练已接受",
   declined: "教练未接受",
@@ -333,6 +341,7 @@ export function App() {
         (booking) =>
           booking.userId === currentUser.id &&
           (booking.status === "reserved" ||
+            booking.status === "payment_pending" ||
             booking.status === "paid" ||
             booking.status === "accepted" ||
             booking.status === "completed"),
@@ -415,10 +424,22 @@ export function App() {
     setStorePatch((draft) => ({
       ...draft,
       bookings: draft.bookings.map((booking) =>
-        booking.id === id ? { ...booking, status: "paid" } : booking,
+        booking.id === id
+          ? {
+              ...booking,
+              status: "paid",
+              payment: booking.payment
+                ? { ...booking.payment, state: "paid", paidAt: new Date().toISOString() }
+                : booking.payment,
+            }
+          : booking,
       ),
     }));
     setPaymentBookingId(null);
+  }
+
+  function confirmBookingPaid(id: string) {
+    payBooking(id);
   }
 
   function updateBookingStatus(id: string, status: BookingStatus) {
@@ -595,6 +616,7 @@ export function App() {
           </button>
           <button
             className={role === "coach" ? "active" : ""}
+            disabled={!currentUser}
             onClick={() => switchRole("coach")}
           >
             <UserRoundCheck size={18} />
@@ -676,6 +698,7 @@ export function App() {
               }))
             }
             onPlatformWithdraw={requestPlatformWithdrawal}
+            onConfirmPayment={confirmBookingPaid}
             onWithdrawal={(id, status) =>
               setStorePatch((draft) => ({
                 ...draft,
@@ -734,7 +757,7 @@ function Header({
           <MessageCircle size={24} />
           <span>教练预约商城 H5</span>
         </div>
-        <p>微信注册、教练预约、微信扫码支付、平台托管与提现管理</p>
+        <p>微信注册、教练预约、支付确认、平台托管与提现管理</p>
       </div>
       <div className="login-cluster">
         <span className={`data-badge ${dataMode}`}>
@@ -1118,6 +1141,7 @@ function AdminDesk({
   onDeleteCoach,
   onSettings,
   onPlatformWithdraw,
+  onConfirmPayment,
   onWithdrawal,
 }: {
   store: Store;
@@ -1125,6 +1149,7 @@ function AdminDesk({
   onDeleteCoach: (coachId: string) => void;
   onSettings: (settings: Settings) => void;
   onPlatformWithdraw: (amount: number) => void;
+  onConfirmPayment: (bookingId: string) => void;
   onWithdrawal: (id: string, status: WithdrawalStatus) => void;
 }) {
   const gross = store.bookings
@@ -1159,6 +1184,10 @@ function AdminDesk({
           <Metric icon={<WalletCards size={19} />} label="托管中" value={formatMoney(escrow)} />
           <Metric icon={<HandCoins size={19} />} label="平台收入" value={formatMoney(platformFees)} />
         </div>
+        <a className="ghost link-button backup-link" href="/api/admin/export">
+          <ClipboardList size={17} />
+          导出数据备份
+        </a>
       </div>
 
       <div className="panel">
@@ -1257,6 +1286,16 @@ function AdminDesk({
             </div>
           ))}
         </div>
+      </div>
+
+      <div className="panel admin-span">
+        <h2>订单收款与流转</h2>
+        <AdminBookingTable
+          bookings={store.bookings}
+          coaches={store.coaches}
+          users={store.users}
+          onConfirmPayment={onConfirmPayment}
+        />
       </div>
 
       <div className="panel admin-span">
@@ -1636,6 +1675,9 @@ function BookingList({
               <small>
                 {statusText[booking.status]} · 托管金额 {formatMoney(booking.amount)}
               </small>
+              {booking.status === "payment_pending" && (
+                <em className="todo-label">待办：平台确认收款后，教练会收到确认提醒</em>
+              )}
               {booking.status === "paid" && <em className="todo-label">待办：等待教练接受</em>}
               {booking.status === "accepted" && <em className="todo-label">待办：按约定时间完成对话</em>}
               {booking.status === "declined" && <em className="todo-label rejected">教练未接受，请联系平台处理退款或重约</em>}
@@ -1704,9 +1746,10 @@ function CoachBookingTable({
     paid: 0,
     accepted: 1,
     completed: 2,
-    reserved: 3,
-    reviewed: 4,
-    declined: 5,
+    payment_pending: 3,
+    reserved: 4,
+    reviewed: 5,
+    declined: 6,
   };
   const sortedBookings = [...bookings].sort(
     (left, right) => statusPriority[left.status] - statusPriority[right.status],
@@ -1747,6 +1790,68 @@ function CoachBookingTable({
                 </button>
               )}
             </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function AdminBookingTable({
+  bookings,
+  coaches,
+  users,
+  onConfirmPayment,
+}: {
+  bookings: Booking[];
+  coaches: Coach[];
+  users: User[];
+  onConfirmPayment: (bookingId: string) => void;
+}) {
+  if (bookings.length === 0) return <p className="muted">暂无订单</p>;
+  const statusPriority: Record<BookingStatus, number> = {
+    payment_pending: 0,
+    reserved: 1,
+    paid: 2,
+    accepted: 3,
+    completed: 4,
+    reviewed: 5,
+    declined: 6,
+  };
+  const sortedBookings = [...bookings].sort(
+    (left, right) => statusPriority[left.status] - statusPriority[right.status],
+  );
+
+  return (
+    <div className="admin-order-table">
+      {sortedBookings.map((booking) => {
+        const coach = coaches.find((item) => item.id === booking.coachId);
+        const user = users.find((item) => item.id === booking.userId);
+        const slot = getSlot(coach, booking.slotId);
+        const canConfirmPayment =
+          booking.status === "payment_pending" ||
+          (booking.status === "reserved" && booking.payment?.provider === "manual_confirmation");
+        return (
+          <div key={booking.id} className="admin-row admin-order-row">
+            <CreditCard size={22} />
+            <span>
+              <strong>
+                {user?.name ?? "未知用户"} 预约 {coach?.name ?? "未知教练"}
+              </strong>
+              <small>
+                {slot ? `${slot.date} ${slot.time}` : "时间已删除"} · {booking.createdAt}
+              </small>
+            </span>
+            <strong>{formatMoney(booking.amount)}</strong>
+            <span className={`pill ${booking.status}`}>{statusText[booking.status]}</span>
+            <button
+              className="primary small"
+              disabled={!canConfirmPayment}
+              onClick={() => onConfirmPayment(booking.id)}
+            >
+              <Check size={16} />
+              确认收款
+            </button>
           </div>
         );
       })}
@@ -1808,7 +1913,7 @@ function ConfirmBookingModal({
           <span>金额</span>
           <strong>{formatMoney(coach.price)}</strong>
         </div>
-        <p className="muted">确认后进入微信支付。支付成功后会生成待办，并通知教练确认是否接受。</p>
+        <p className="muted">确认后进入支付确认。收款确认后会生成待办，并通知教练确认是否接受。</p>
         <button className="primary full" onClick={onConfirm}>
           <QrCode size={18} />
           确认并进入支付
@@ -1837,6 +1942,7 @@ function PaymentModal({
   const [missing, setMissing] = useState<string[]>([]);
   const [allowMock, setAllowMock] = useState(false);
   const [error, setError] = useState("");
+  const [manualRequested, setManualRequested] = useState(false);
 
   useEffect(() => {
     if (!booking) return;
@@ -1846,6 +1952,7 @@ function PaymentModal({
     setMissing([]);
     setQrDataUrl("");
     setCodeUrl("");
+    setManualRequested(false);
 
     fetch("/api/payment-config")
       .then((response) => response.json())
@@ -1901,7 +2008,7 @@ function PaymentModal({
       stopped = true;
       window.clearInterval(poll);
     };
-  }, [booking, onClose, onStoreReplace]);
+  }, [booking?.id]);
 
   if (!booking || !coach) return null;
   const slot = getSlot(coach, booking.slotId);
@@ -1924,6 +2031,26 @@ function PaymentModal({
     setLoading(false);
   }
 
+  async function requestManualConfirmation() {
+    setLoading(true);
+    setError("");
+    const response = await fetch("/api/payments/manual-confirmation", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bookingId: booking?.id }),
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      setError(body.error || "提交人工确认失败");
+      setLoading(false);
+      return;
+    }
+    const payload = (await response.json()) as { store: Store };
+    onStoreReplace(payload.store);
+    setManualRequested(true);
+    setLoading(false);
+  }
+
   return (
     <div className="modal-backdrop">
       <div className="modal">
@@ -1933,7 +2060,7 @@ function PaymentModal({
         <div className="qr-visual">
           {qrDataUrl ? <img src={qrDataUrl} alt="微信支付二维码" /> : <QrCode size={112} />}
         </div>
-        <h2>微信扫码支付</h2>
+        <h2>支付确认</h2>
         <p>
           {coach.name} · {slot?.date} {slot?.time}
         </p>
@@ -1946,11 +2073,23 @@ function PaymentModal({
         {missing.length > 0 && (
           <div className="payment-warning">
             <strong>微信支付尚未配置</strong>
-            <p>需要在服务端环境变量中补齐：</p>
+            <p>当前可先走人工收款确认；补齐微信支付环境变量后，会自动显示扫码支付。</p>
             <small>{missing.join("、")}</small>
           </div>
         )}
+        {manualRequested && (
+          <div className="payment-success">
+            <strong>已提交平台确认</strong>
+            <p>管理员确认收款后，订单会进入“待教练确认”。</p>
+          </div>
+        )}
         {error && <p className="error-text">{error}</p>}
+        {missing.length > 0 && !manualRequested && (
+          <button className="primary full" onClick={requestManualConfirmation} disabled={loading}>
+            <HandCoins size={18} />
+            已付款，提交平台确认
+          </button>
+        )}
         {allowMock && (
           <button className="ghost full" onClick={mockPay} disabled={loading}>
             <BadgeCheck size={18} />
