@@ -15,6 +15,7 @@ const adminName = process.env.ADMIN_NAME || "管理员";
 const adminPhone = process.env.ADMIN_PHONE || "admin";
 const sessionMaxAgeSeconds = 30 * 24 * 60 * 60;
 const oauthStateMaxAgeMs = 10 * 60 * 1000;
+const reviewMaxLength = 200;
 
 const seedStore = {
   users: [
@@ -326,7 +327,8 @@ function isAllowedReviewCreate(currentStore, nextStore, user) {
       review.coachId === currentBooking.coachId &&
       Number(review.rating) >= 1 &&
       Number(review.rating) <= 5 &&
-      String(review.content || "").trim(),
+      String(review.content || "").trim() &&
+      String(review.content || "").trim().length <= reviewMaxLength,
   );
 }
 

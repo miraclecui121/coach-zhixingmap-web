@@ -54,7 +54,7 @@ type User = {
 
 type Slot = {
   id: string;
-  weekday: "周三" | "周四";
+  weekday: string;
   date: string;
   time: string;
   enabled: boolean;
@@ -70,6 +70,8 @@ type Coach = {
   price: number;
   intro: string;
   background: string;
+  payoutMethod?: string;
+  payoutAccount?: string;
   specialties: string[];
   slots: Slot[];
 };
@@ -113,6 +115,8 @@ type Withdrawal = {
   coachId?: string;
   amount: number;
   status: WithdrawalStatus;
+  destination?: string;
+  reviewedAt?: string;
   createdAt: string;
 };
 
@@ -147,6 +151,7 @@ type PaymentConfig = {
 };
 
 const storageKey = "coach-marketplace-h5-store";
+const reviewMaxLength = 200;
 
 const seedStore: Store = {
   users: [
@@ -248,7 +253,12 @@ function isWechatBrowser() {
 }
 
 function isStudentActionStatus(status: BookingStatus) {
-  return status === "reserved" || status === "payment_pending" || status === "completed";
+  return (
+    status === "reserved" ||
+    status === "payment_pending" ||
+    status === "accepted" ||
+    status === "completed"
+  );
 }
 
 function isCoachActionStatus(status: BookingStatus) {
@@ -281,6 +291,31 @@ function coachBookingMessage(status: BookingStatus) {
     cancelled: "消息：预约已取消",
   };
   return messages[status];
+}
+
+function weekdayOptions() {
+  return ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+}
+
+function defaultSlot(): Slot {
+  return {
+    id: makeId("s"),
+    weekday: "周三",
+    date: "2026-05-27",
+    time: "14:00-15:00",
+    enabled: true,
+  };
+}
+
+function formatSlotTime(slot: Slot | undefined) {
+  return slot ? `${slot.weekday} ${slot.date} ${slot.time}` : "时间已删除";
+}
+
+function coachPayoutDestination(coach: Coach | undefined) {
+  if (!coach) return "待管理员线下核对收款信息";
+  const method = coach.payoutMethod?.trim() || "微信/银行卡线下转账";
+  const account = coach.payoutAccount?.trim() || "未填写收款账号，请管理员联系教练确认";
+  return `${method}：${account}`;
 }
 
 function invokeWechatPay(payParams: Record<string, string>) {
@@ -672,11 +707,7 @@ export function App() {
               slots: [
                 ...coach.slots,
                 {
-                  id: makeId("s"),
-                  weekday: "周三",
-                  date: "2026-05-27",
-                  time: "14:00-15:00",
-                  enabled: true,
+                  ...defaultSlot(),
                 },
               ],
             }
@@ -714,6 +745,7 @@ export function App() {
 
   function requestWithdrawal(coachId: string, amount: number) {
     if (amount <= 0) return;
+    const coach = storeRef.current.coaches.find((item) => item.id === coachId);
     setStorePatch((draft) => ({
       ...draft,
       withdrawals: [
@@ -723,6 +755,7 @@ export function App() {
           coachId,
           amount,
           status: "pending",
+          destination: coachPayoutDestination(coach),
           createdAt: new Date().toLocaleString("zh-CN", { hour12: false }),
         },
         ...draft.withdrawals,
@@ -740,6 +773,7 @@ export function App() {
           target: "platform",
           amount,
           status: "pending",
+          destination: "平台绑定收款账户 / 商户号结算账户",
           createdAt: new Date().toLocaleString("zh-CN", { hour12: false }),
         },
         ...draft.withdrawals,
@@ -840,7 +874,13 @@ export function App() {
                   setStorePatch((draft) => ({
                     ...draft,
                     withdrawals: draft.withdrawals.map((withdrawal) =>
-                      withdrawal.id === id ? { ...withdrawal, status } : withdrawal,
+                      withdrawal.id === id
+                        ? {
+                            ...withdrawal,
+                            status,
+                            reviewedAt: new Date().toLocaleString("zh-CN", { hour12: false }),
+                          }
+                        : withdrawal,
                     ),
                   }))
                 }
@@ -1341,6 +1381,11 @@ function CoachDesk({
             <Metric icon={<WalletCards size={19} />} label="可提现" value={formatMoney(withdrawable)} />
             <Metric icon={<Star size={19} />} label="评价数" value={reviews.filter((review) => review.coachId === coach.id).length.toString()} />
           </div>
+          <div className="notice-box payout-notice">
+            <strong>提现去向</strong>
+            <p>{coachPayoutDestination(coach)}</p>
+            <small>提交提现后进入管理员审核，预计 1 天左右处理；审核通过后按上方收款信息线下打款。</small>
+          </div>
           <button
             className="primary full"
             disabled={coach.status !== "approved" || withdrawable <= 0}
@@ -1349,6 +1394,7 @@ function CoachDesk({
             <HandCoins size={18} />
             申请提现 {formatMoney(withdrawable)}
           </button>
+          <WithdrawalList withdrawals={withdrawals} coach={coach} />
         </div>
 
         {(coachActionBookings.length > 0 || waitingForStudentBookings.length > 0) && (
@@ -1390,7 +1436,7 @@ function CoachDesk({
           <div className="section-title compact">
             <div>
               <h2>可预约时间</h2>
-              <p>当前 MVP 限定周三或周四下午，由教练自己维护。</p>
+              <p>教练可自定义开放日期、星期和时间段；关闭后用户端不可预约。</p>
             </div>
             <button className="ghost" onClick={() => onAddSlot(coach.id)}>
               <Plus size={17} />
@@ -1610,6 +1656,12 @@ function AdminDesk({
                 <span>
                   <strong>{isPlatform ? "平台扣点" : coach?.name ?? "未知教练"}</strong>
                   <small>{withdrawal.createdAt}</small>
+                  <small>打款去向：{withdrawal.destination || (isPlatform ? "平台绑定收款账户 / 商户号结算账户" : coachPayoutDestination(coach))}</small>
+                  {withdrawal.status === "pending" && <small>审核后请按该去向线下打款，预计 1 天左右处理。</small>}
+                  {withdrawal.status === "approved" && (
+                    <small>已审核通过，请确认已按上述去向完成打款。</small>
+                  )}
+                  {withdrawal.status === "rejected" && <small>已拒绝，请与申请方沟通原因。</small>}
                 </span>
                 <strong>{formatMoney(withdrawal.amount)}</strong>
                 <span className={`pill ${withdrawal.status}`}>{withdrawal.status}</span>
@@ -1713,15 +1765,7 @@ function CoachApplicationForm({
     intro: "",
     background: "",
     specialties: [],
-    slots: [
-      {
-        id: makeId("s"),
-        weekday: "周三",
-        date: "2026-05-27",
-        time: "14:00-15:00",
-        enabled: true,
-      },
-    ],
+    slots: [defaultSlot()],
   });
   const specialtyText = draft.specialties.join("，");
   const canSubmit =
@@ -1811,7 +1855,7 @@ function CoachApplicationForm({
       <div className="section-title compact application-slots-title">
         <div>
           <h2>可预约时间</h2>
-          <p>至少开放一个周三或周四下午的对话时间。</p>
+          <p>至少开放一个可预约时间，可自定义星期、日期和时间段。</p>
         </div>
         <button
           className="ghost"
@@ -1820,13 +1864,7 @@ function CoachApplicationForm({
               ...draft,
               slots: [
                 ...draft.slots,
-                {
-                  id: makeId("s"),
-                  weekday: "周三",
-                  date: "2026-05-27",
-                  time: "14:00-15:00",
-                  enabled: true,
-                },
+                defaultSlot(),
               ],
             })
           }
@@ -1842,8 +1880,11 @@ function CoachApplicationForm({
               value={slot.weekday}
               onChange={(event) => updateSlotDraft(slot.id, { weekday: event.target.value as Slot["weekday"] })}
             >
-              <option value="周三">周三</option>
-              <option value="周四">周四</option>
+              {weekdayOptions().map((weekday) => (
+                <option key={weekday} value={weekday}>
+                  {weekday}
+                </option>
+              ))}
             </select>
             <input
               type="date"
@@ -1942,6 +1983,53 @@ function EditableCoach({
           }
         />
       </label>
+      <label className="field">
+        <span>提现方式</span>
+        <input
+          value={coach.payoutMethod ?? ""}
+          disabled={disabled}
+          onChange={(event) => onUpdate(coach.id, { payoutMethod: event.target.value })}
+          placeholder="微信、银行卡、支付宝等"
+        />
+      </label>
+      <label className="field">
+        <span>收款账号</span>
+        <input
+          value={coach.payoutAccount ?? ""}
+          disabled={disabled}
+          onChange={(event) => onUpdate(coach.id, { payoutAccount: event.target.value })}
+          placeholder="微信号 / 银行卡后四位 / 备注"
+        />
+      </label>
+    </div>
+  );
+}
+
+function WithdrawalList({ withdrawals, coach }: { withdrawals: Withdrawal[]; coach: Coach }) {
+  const coachWithdrawals = withdrawals.filter(
+    (withdrawal) => (withdrawal.target ?? "coach") === "coach" && withdrawal.coachId === coach.id,
+  );
+  if (coachWithdrawals.length === 0) {
+    return <p className="muted payout-history">暂无提现申请</p>;
+  }
+  return (
+    <div className="withdrawal-list">
+      {coachWithdrawals.map((withdrawal) => (
+        <div key={withdrawal.id} className="withdrawal-item">
+          <span>
+            <strong>{formatMoney(withdrawal.amount)}</strong>
+            <small>{withdrawal.createdAt}</small>
+          </span>
+          <span className={`pill ${withdrawal.status}`}>{withdrawal.status}</span>
+          <small>
+            {withdrawal.status === "pending"
+              ? "等待管理员审核，预计 1 天左右。"
+              : withdrawal.status === "approved"
+                ? `已审核通过，将打款至：${withdrawal.destination || coachPayoutDestination(coach)}`
+                : "提现被拒绝，请联系管理员确认原因。"}
+          </small>
+        </div>
+      ))}
     </div>
   );
 }
@@ -1967,8 +2055,11 @@ function SlotEditor({
             disabled={disabled}
             onChange={(event) => onUpdate(coach.id, slot.id, { weekday: event.target.value as Slot["weekday"] })}
           >
-            <option value="周三">周三</option>
-            <option value="周四">周四</option>
+            {weekdayOptions().map((weekday) => (
+              <option key={weekday} value={weekday}>
+                {weekday}
+              </option>
+            ))}
           </select>
           <input
             type="date"
@@ -2069,11 +2160,17 @@ function BookingList({
               <strong>{coach?.name}</strong>
               <span>{slot ? `${slot.weekday} ${slot.date} ${slot.time}` : "时间已删除"}</span>
               <small>
-                {statusText[booking.status]} · 托管金额 {formatMoney(booking.amount)}
+                {statusText[booking.status]} · 金额 {formatMoney(booking.amount)}
               </small>
               <em className={`todo-label ${booking.status === "declined" ? "rejected" : ""}`}>
                 {userBookingMessage(booking.status)}
               </em>
+              {booking.status === "accepted" && (
+                <div className="service-reminder">
+                  <strong>服务中提醒</strong>
+                  <small>预约时间：{formatSlotTime(slot)}。请按约定时间完成对话。</small>
+                </div>
+              )}
             </div>
             <div className="booking-actions">
               {booking.status === "reserved" && (
@@ -2106,10 +2203,14 @@ function BookingList({
                   ))}
                 </select>
                 <input
+                  maxLength={reviewMaxLength}
                   value={content}
                   onChange={(event) => setReviewDraft({ ...reviewDraft, [booking.id]: event.target.value })}
-                  placeholder={`${currentUser.name}，写下这次对话的反馈`}
+                  placeholder={`${currentUser.name}，写下这次对话的反馈，最多 ${reviewMaxLength} 字`}
                 />
+                <small className="char-count">
+                  {content.length}/{reviewMaxLength}
+                </small>
                 <button className="primary small" disabled={!content.trim()} onClick={() => onReview(booking.id, rating, content.trim())}>
                   <MessageSquareText size={16} />
                   提交评价
