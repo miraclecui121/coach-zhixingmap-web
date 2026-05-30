@@ -520,9 +520,48 @@ p {
   padding: 14px;
 }
 
+.highlight-card {
+  background: #fffdf2 !important;
+  border-color: #e0b94f !important;
+  box-shadow: 0 0 0 3px rgba(224, 185, 79, 0.16);
+}
+
 .booking-card > div:first-child {
   display: grid;
   gap: 4px;
+}
+
+.task-panel {
+  background: #fffdf2;
+  border-color: #e0b94f;
+}
+
+.inline-task-panel {
+  border: 1px solid #e0b94f;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.task-list {
+  display: grid;
+  gap: 8px;
+}
+
+.task-item {
+  background: #ffffff;
+  border: 1px solid #e9dfb7;
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+}
+
+.task-item.urgent {
+  border-left: 4px solid #b77900;
+}
+
+.task-item strong {
+  color: #704d00;
 }
 
 .booking-actions {

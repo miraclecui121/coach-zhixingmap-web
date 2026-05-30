@@ -172,10 +172,10 @@ const statusText: Record<BookingStatus, string> = {
   reserved: "待支付",
   payment_pending: "待平台确认收款",
   paid: "待教练确认",
-  accepted: "教练已接受",
+  accepted: "服务中",
   declined: "教练未接受",
-  completed: "已完成待评价",
-  reviewed: "已评价",
+  completed: "学员待评价",
+  reviewed: "服务结束",
   cancelled: "已取消",
 };
 
@@ -245,6 +245,42 @@ function getApiErrorMessage(body: unknown, fallback: string) {
 
 function isWechatBrowser() {
   return /MicroMessenger/i.test(window.navigator.userAgent);
+}
+
+function isStudentActionStatus(status: BookingStatus) {
+  return status === "reserved" || status === "payment_pending" || status === "completed";
+}
+
+function isCoachActionStatus(status: BookingStatus) {
+  return status === "paid" || status === "accepted";
+}
+
+function userBookingMessage(status: BookingStatus) {
+  const messages: Record<BookingStatus, string> = {
+    reserved: "待办：请完成支付，支付后教练会收到确认提醒",
+    payment_pending: "待办：平台确认收款后，教练会收到确认提醒",
+    paid: "消息：支付成功，已通知教练确认预约",
+    accepted: "消息：教练已确认，当前进入服务中",
+    declined: "消息：教练未接受，请联系平台处理退款或重约",
+    completed: "待办：教练已确认完成，请评价打分后结束服务",
+    reviewed: "消息：服务已结束，感谢你的评价",
+    cancelled: "消息：预约已取消",
+  };
+  return messages[status];
+}
+
+function coachBookingMessage(status: BookingStatus) {
+  const messages: Record<BookingStatus, string> = {
+    reserved: "消息：学员已预约，等待支付",
+    payment_pending: "消息：学员已提交付款确认，等待平台确认收款",
+    paid: "待办：新预约待确认，请接受或拒绝",
+    accepted: "待办：服务中，完成后请确认服务完成",
+    declined: "消息：你已拒绝该预约",
+    completed: "消息：已通知学员评价，评价完成后金额进入可提现",
+    reviewed: "消息：服务已结束，收入已计入可提现",
+    cancelled: "消息：预约已取消",
+  };
+  return messages[status];
 }
 
 function invokeWechatPay(payParams: Record<string, string>) {
@@ -1235,7 +1271,7 @@ function CoachDesk({
 
   const coachBookings = bookings.filter((booking) => booking.coachId === coach.id);
   const completedIncome = coachBookings
-    .filter((booking) => booking.status === "completed" || booking.status === "reviewed")
+    .filter((booking) => booking.status === "reviewed")
     .reduce((sum, booking) => sum + booking.coachIncome, 0);
   const paidOut = withdrawals
     .filter(
@@ -1249,6 +1285,8 @@ function CoachDesk({
   const listingStatus = getCoachListingStatus(coach);
   const coachReviews = reviews.filter((review) => review.coachId === coach.id);
   const isApproved = coach.status === "approved";
+  const coachActionBookings = coachBookings.filter((booking) => isCoachActionStatus(booking.status));
+  const waitingForStudentBookings = coachBookings.filter((booking) => booking.status === "completed");
 
   return (
     <section className="workspace two-col">
@@ -1313,6 +1351,41 @@ function CoachDesk({
           </button>
         </div>
 
+        {(coachActionBookings.length > 0 || waitingForStudentBookings.length > 0) && (
+          <div className="panel task-panel">
+            <div className="section-title compact">
+              <div>
+                <h2>教练待办</h2>
+                <p>需要你处理的预约会优先显示在这里。</p>
+              </div>
+              <ClipboardList size={22} />
+            </div>
+            <div className="task-list">
+              {coachActionBookings.map((booking) => {
+                const user = users.find((item) => item.id === booking.userId);
+                const slot = getSlot(coach, booking.slotId);
+                return (
+                  <div key={booking.id} className="task-item urgent">
+                    <strong>{coachBookingMessage(booking.status)}</strong>
+                    <small>
+                      {user?.name ?? "未知用户"} · {slot ? `${slot.date} ${slot.time}` : "时间已删除"}
+                    </small>
+                  </div>
+                );
+              })}
+              {waitingForStudentBookings.map((booking) => {
+                const user = users.find((item) => item.id === booking.userId);
+                return (
+                  <div key={booking.id} className="task-item">
+                    <strong>{coachBookingMessage(booking.status)}</strong>
+                    <small>{user?.name ?? "未知用户"} 正在完成评价，评价后金额进入可提现。</small>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         <div className="panel">
           <div className="section-title compact">
             <div>
@@ -1366,7 +1439,7 @@ function AdminDesk({
     .filter((booking) => booking.status === "paid" || booking.status === "accepted")
     .reduce((sum, booking) => sum + booking.amount, 0);
   const platformFees = store.bookings
-    .filter((booking) => booking.status === "completed" || booking.status === "reviewed")
+    .filter((booking) => booking.status === "reviewed")
     .reduce((sum, booking) => sum + booking.platformFee, 0);
   const platformPaidOut = store.withdrawals
     .filter((withdrawal) => withdrawal.target === "platform" && withdrawal.status !== "rejected")
@@ -1949,8 +2022,38 @@ function BookingList({
     return <p className="muted">暂无预约</p>;
   }
 
+  const actionBookings = bookings.filter((booking) => isStudentActionStatus(booking.status));
+
   return (
     <div className="booking-stack">
+      {actionBookings.length > 0 && (
+        <div className="task-panel inline-task-panel">
+          <div className="section-title compact">
+            <div>
+              <h3>我的待办与消息</h3>
+              <p>下一步要做的事会优先显示在这里。</p>
+            </div>
+            <ClipboardList size={20} />
+          </div>
+          <div className="task-list">
+            {actionBookings.map((booking) => {
+              const coach = coaches.find((item) => item.id === booking.coachId);
+              const slot = getSlot(coach, booking.slotId);
+              return (
+                <div
+                  key={booking.id}
+                  className={`task-item ${isStudentActionStatus(booking.status) ? "urgent" : ""}`}
+                >
+                  <strong>{userBookingMessage(booking.status)}</strong>
+                  <small>
+                    {coach?.name ?? "未知教练"} · {slot ? `${slot.date} ${slot.time}` : "时间已删除"}
+                  </small>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
       {bookings.map((booking) => {
         const coach = coaches.find((item) => item.id === booking.coachId);
         const slot = getSlot(coach, booking.slotId);
@@ -1958,19 +2061,19 @@ function BookingList({
         const content = reviewDraft[booking.id] ?? "";
         const note = noteDraft[booking.id] ?? booking.note ?? "";
         return (
-          <article key={booking.id} className="booking-card">
+          <article
+            key={booking.id}
+            className={`booking-card ${isStudentActionStatus(booking.status) ? "highlight-card" : ""}`}
+          >
             <div>
               <strong>{coach?.name}</strong>
               <span>{slot ? `${slot.weekday} ${slot.date} ${slot.time}` : "时间已删除"}</span>
               <small>
                 {statusText[booking.status]} · 托管金额 {formatMoney(booking.amount)}
               </small>
-              {booking.status === "payment_pending" && (
-                <em className="todo-label">待办：平台确认收款后，教练会收到确认提醒</em>
-              )}
-              {booking.status === "paid" && <em className="todo-label">待办：等待教练接受</em>}
-              {booking.status === "accepted" && <em className="todo-label">待办：按约定时间完成对话</em>}
-              {booking.status === "declined" && <em className="todo-label rejected">教练未接受，请联系平台处理退款或重约</em>}
+              <em className={`todo-label ${booking.status === "declined" ? "rejected" : ""}`}>
+                {userBookingMessage(booking.status)}
+              </em>
             </div>
             <div className="booking-actions">
               {booking.status === "reserved" && (
@@ -2051,11 +2154,12 @@ function CoachBookingTable({
         const slot = getSlot(coach, booking.slotId);
         const user = users.find((item) => item.id === booking.userId);
         return (
-          <div key={booking.id}>
+          <div key={booking.id} className={isCoachActionStatus(booking.status) ? "highlight-card" : ""}>
             <span>
               <strong>{user?.name ?? "未知用户"}</strong>
-              {booking.status === "paid" && <small className="new-order">新预约待接受</small>}
-              {booking.status === "accepted" && <small className="new-order">已接受，待完成</small>}
+              <small className={isCoachActionStatus(booking.status) ? "new-order" : ""}>
+                {coachBookingMessage(booking.status)}
+              </small>
               {booking.note && <small>留言：{booking.note}</small>}
             </span>
             <small>{slot ? `${slot.date} ${slot.time}` : "时间已删除"}</small>
@@ -2241,6 +2345,7 @@ function PaymentModal({
     if (!booking) return;
     let stopped = false;
     const inWechat = isWechatBrowser();
+    let shouldSyncWechatPay = false;
     setLoading(true);
     setError("");
     setPaymentNotice("");
@@ -2248,6 +2353,29 @@ function PaymentModal({
     setQrDataUrl("");
     setCodeUrl("");
     setManualRequested(false);
+
+    const applyRemoteStore = (remoteStore: Store) => {
+      const remoteBooking = remoteStore.bookings.find((item) => item.id === booking.id);
+      if (remoteBooking?.status === "paid") {
+        onStoreReplace(remoteStore);
+        onClose();
+        return true;
+      }
+      onStoreReplace(remoteStore);
+      return false;
+    };
+
+    const syncWechatPayment = async () => {
+      const response = await fetch("/api/payments/wechat/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bookingId: booking.id }),
+      });
+      if (!response.ok) return false;
+      const payload = (await response.json()) as { store: Store };
+      if (stopped || !payload.store) return false;
+      return applyRemoteStore(payload.store);
+    };
 
     fetch("/api/payment-config")
       .then((response) => response.json())
@@ -2258,6 +2386,7 @@ function PaymentModal({
           setMissing(config.missing ?? []);
           return null;
         }
+        shouldSyncWechatPay = true;
         return fetch(inWechat ? "/api/payments/wechat/jsapi" : "/api/payments/wechat/native", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -2280,6 +2409,7 @@ function PaymentModal({
           await invokeWechatPay(payment.payParams);
           if (!stopped) {
             setPaymentNotice("支付已完成，正在等待微信回调确认订单。");
+            await syncWechatPayment().catch(() => false);
           }
           return;
         }
@@ -2294,15 +2424,15 @@ function PaymentModal({
       });
 
     const poll = window.setInterval(() => {
-      fetch("/api/store")
-        .then((response) => response.json())
-        .then((remoteStore: Store) => {
-          if (stopped) return;
-          const remoteBooking = remoteStore.bookings.find((item) => item.id === booking.id);
-          if (remoteBooking?.status === "paid") {
-            onStoreReplace(remoteStore);
-            onClose();
-          }
+      (shouldSyncWechatPay ? syncWechatPayment() : Promise.resolve(false))
+        .then((closed) => {
+          if (closed || stopped) return null;
+          return fetch("/api/store");
+        })
+        .then((response) => response?.json() as Promise<Store> | undefined)
+        .then((remoteStore) => {
+          if (stopped || !remoteStore) return;
+          applyRemoteStore(remoteStore);
         })
         .catch(() => undefined);
     }, 3000);

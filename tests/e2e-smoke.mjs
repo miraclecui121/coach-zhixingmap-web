@@ -269,15 +269,25 @@ async function main() {
     await gotoPortal(page, "/coach");
     await page.getByText(`留言：${noteText}`).waitFor();
     await page.getByRole("button", { name: "接受", exact: true }).click();
-    await page.getByText("教练已接受").waitFor();
+    await page.getByText("服务中", { exact: true }).waitFor();
     await page.getByRole("button", { name: "确认完成" }).click();
-    await page.getByText("已完成待评价").waitFor();
+    await page.locator(".order-table").filter({ hasText: "学员待评价" }).waitFor();
+    await page.waitForFunction(() => {
+      return fetch("/api/store")
+        .then((response) => response.json())
+        .then((state) => state.bookings.some((booking) => booking.status === "completed"));
+    });
+    const unavailableWithdrawButton = page.getByRole("button", { name: /申请提现/ });
+    assert(
+      !(await unavailableWithdrawButton.isEnabled()),
+      "学员评价前教练不应能提现",
+    );
 
     await clickText(page, "退出");
     await login("user-openid");
     await page.locator(".current-account").filter({ hasText: "测试用户" }).waitFor();
     await gotoPortal(page, "/user");
-    await page.getByText("已完成待评价").waitFor();
+    await page.locator(".booking-card").filter({ hasText: "学员待评价" }).waitFor();
     const reviewContent = "教练很具体，预约体验顺畅。";
     const reviewBox = page.locator(".review-box").first();
     await reviewBox.locator("input").fill(reviewContent);
@@ -356,7 +366,7 @@ async function main() {
       (await page.locator(".coach-card").filter({ hasText: "真实环境测试教练" }).count()) === 0,
       "下架教练不应继续出现在用户列表",
     );
-    await page.getByText("已评价").waitFor();
+    await page.locator(".booking-card").filter({ hasText: "服务结束" }).waitFor();
     await clickText(page, "退出");
     await login("admin");
     await gotoPortal(page, "/admin");

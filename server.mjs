@@ -159,7 +159,7 @@ function getCompletedIncome(store, coachId) {
     .filter(
       (booking) =>
         booking.coachId === coachId &&
-        (booking.status === "completed" || booking.status === "reviewed"),
+        booking.status === "reviewed",
     )
     .reduce((sum, booking) => sum + Number(booking.coachIncome || 0), 0);
 }
@@ -735,6 +735,27 @@ function signWechatRequest(method, requestPath, body) {
   return `WECHATPAY2-SHA256-RSA2048 mchid="${process.env.WECHAT_PAY_MCH_ID}",nonce_str="${nonce}",signature="${signature}",timestamp="${timestamp}",serial_no="${process.env.WECHAT_PAY_SERIAL_NO}"`;
 }
 
+async function fetchWechatTransaction(outTradeNo) {
+  const requestPath = `/v3/pay/transactions/out-trade-no/${encodeURIComponent(
+    outTradeNo,
+  )}?mchid=${encodeURIComponent(process.env.WECHAT_PAY_MCH_ID)}`;
+  const wxResponse = await fetch(`https://api.mch.weixin.qq.com${requestPath}`, {
+    method: "GET",
+    headers: {
+      Authorization: signWechatRequest("GET", requestPath, ""),
+      Accept: "application/json",
+    },
+  });
+  const body = await wxResponse.json();
+  if (!wxResponse.ok) {
+    const error = new Error(body.message || body.code || "微信支付订单查询失败");
+    error.status = wxResponse.status;
+    error.detail = body;
+    throw error;
+  }
+  return body;
+}
+
 function signWechatJsapiPay(appId, timeStamp, nonceStr, packageValue) {
   const message = `${appId}\n${timeStamp}\n${nonceStr}\n${packageValue}\n`;
   return crypto
@@ -1254,6 +1275,71 @@ app.post("/api/payments/wechat/jsapi", async (request, response) => {
     });
   } catch (error) {
     response.status(500).json({ error: "WECHAT_PAY_ERROR", message: error.message });
+  }
+});
+
+app.post("/api/payments/wechat/sync", async (request, response) => {
+  const store = await readStore();
+  const userId = getSessionUserId(request);
+  const user = store.users.find((item) => item.id === userId);
+  if (!user) {
+    response.status(401).json({ error: "LOGIN_REQUIRED" });
+    return;
+  }
+  const booking = store.bookings.find((item) => item.id === request.body.bookingId);
+  if (!booking) {
+    response.status(404).json({ error: "BOOKING_NOT_FOUND" });
+    return;
+  }
+  if (booking.userId !== user.id && !user.isAdmin) {
+    response.status(403).json({ error: "BOOKING_FORBIDDEN" });
+    return;
+  }
+  if (!booking.payment?.outTradeNo) {
+    response.json({ booking, store, synced: false });
+    return;
+  }
+
+  try {
+    const transaction = await fetchWechatTransaction(booking.payment.outTradeNo);
+    let nextStore = store;
+    let nextBooking = booking;
+    if (
+      transaction.trade_state === "SUCCESS" &&
+      (booking.status === "reserved" || booking.status === "payment_pending")
+    ) {
+      nextStore = {
+        ...store,
+        bookings: store.bookings.map((item) =>
+          item.id === booking.id
+            ? {
+                ...item,
+                status: "paid",
+                payment: {
+                  ...item.payment,
+                  state: "paid",
+                  transactionId: transaction.transaction_id,
+                  paidAt: new Date().toISOString(),
+                },
+              }
+            : item,
+        ),
+      };
+      nextBooking = nextStore.bookings.find((item) => item.id === booking.id);
+      await writeStore(nextStore);
+    }
+    response.json({
+      booking: nextBooking,
+      store: nextStore,
+      synced: true,
+      tradeState: transaction.trade_state,
+    });
+  } catch (error) {
+    response.status(error.status || 500).json({
+      error: "WECHAT_PAY_QUERY_FAILED",
+      message: error.message,
+      detail: error.detail,
+    });
   }
 });
 
