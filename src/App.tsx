@@ -34,7 +34,8 @@ type BookingStatus =
   | "accepted"
   | "declined"
   | "completed"
-  | "reviewed";
+  | "reviewed"
+  | "cancelled";
 type WithdrawalStatus = "pending" | "approved" | "rejected";
 
 type User = {
@@ -174,6 +175,7 @@ const statusText: Record<BookingStatus, string> = {
   declined: "教练未接受",
   completed: "已完成待评价",
   reviewed: "已评价",
+  cancelled: "已取消",
 };
 
 const coachStatusText: Record<CoachStatus, string> = {
@@ -224,6 +226,20 @@ function getCoachListingStatus(coach: Coach): CoachListingStatus {
 
 function isListedCoach(coach: Coach) {
   return coach.status === "approved" && getCoachListingStatus(coach) === "listed";
+}
+
+function isSlotOccupiedStatus(status: BookingStatus) {
+  return status !== "declined" && status !== "cancelled";
+}
+
+function getApiErrorMessage(body: unknown, fallback: string) {
+  if (!body || typeof body !== "object") return fallback;
+  const payload = body as {
+    error?: string;
+    message?: string;
+    detail?: { code?: string; message?: string };
+  };
+  return payload.detail?.message || payload.message || payload.detail?.code || payload.error || fallback;
 }
 
 function loadStore(): Store {
@@ -444,6 +460,30 @@ export function App() {
   async function bookSlot(coach: Coach, slot: Slot) {
     if (!currentUser || !isListedCoach(coach)) return;
     setBookingError("");
+    if (dataMode === "api") {
+      try {
+        const response = await fetch("/api/bookings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ coachId: coach.id, slotId: slot.id }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          setBookingError(getApiErrorMessage(payload, "预约保存失败，请刷新后重新选择时间。"));
+          return;
+        }
+        const nextStore = payload.store as Store;
+        storeRef.current = nextStore;
+        setStore(nextStore);
+        window.localStorage.setItem(storageKey, JSON.stringify(nextStore));
+        setPaymentBookingId(String(payload.bookingId));
+        return;
+      } catch {
+        setBookingError("预约保存失败，请检查网络后重新选择时间。");
+        return;
+      }
+    }
+
     const amount = coach.price;
     const platformFee = store.settings.commissionEnabled
       ? amount * (store.settings.commissionRate / 100)
@@ -749,6 +789,7 @@ export function App() {
           onStoreReplace={(nextStore) => {
             storeRef.current = nextStore;
             setStore(nextStore);
+            window.localStorage.setItem(storageKey, JSON.stringify(nextStore));
           }}
         />
       )}
@@ -1045,7 +1086,7 @@ function UserDesk({
                     (booking) =>
                       booking.coachId === selectedCoach.id &&
                       booking.slotId === slot.id &&
-                      booking.status !== "declined",
+                      isSlotOccupiedStatus(booking.status),
                   );
                   return (
                     <button
@@ -1958,6 +1999,7 @@ function CoachBookingTable({
     reserved: 4,
     reviewed: 5,
     declined: 6,
+    cancelled: 7,
   };
   const sortedBookings = [...bookings].sort(
     (left, right) => statusPriority[left.status] - statusPriority[right.status],
@@ -2025,6 +2067,7 @@ function AdminBookingTable({
     completed: 4,
     reviewed: 5,
     declined: 6,
+    cancelled: 7,
   };
   const sortedBookings = [...bookings].sort(
     (left, right) => statusPriority[left.status] - statusPriority[right.status],
@@ -2181,7 +2224,7 @@ function PaymentModal({
         if (!response || stopped) return null;
         if (!response.ok) {
           return response.json().then((body) => {
-            throw new Error(body.message || body.error || "微信支付下单失败");
+            throw new Error(getApiErrorMessage(body, "微信支付下单失败"));
           });
         }
         return response.json();
@@ -2231,7 +2274,7 @@ function PaymentModal({
     });
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      setError(body.error || "测试支付未启用");
+      setError(getApiErrorMessage(body, "测试支付未启用"));
       setLoading(false);
       return;
     }
@@ -2249,7 +2292,7 @@ function PaymentModal({
     });
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      setError(body.error || "提交人工确认失败");
+      setError(getApiErrorMessage(body, "提交人工确认失败"));
       setLoading(false);
       return;
     }

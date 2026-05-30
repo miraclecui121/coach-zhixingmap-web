@@ -59,7 +59,8 @@ app.post(
       if (transaction.trade_state === "SUCCESS") {
         const store = await readStore();
         store.bookings = store.bookings.map((booking) =>
-          booking.payment?.outTradeNo === transaction.out_trade_no
+          booking.payment?.outTradeNo === transaction.out_trade_no &&
+          (booking.status === "reserved" || booking.status === "payment_pending")
             ? {
                 ...booking,
                 status: "paid",
@@ -147,6 +148,10 @@ function getCoachForUser(store, userId) {
 
 function getCoachListingStatus(coach = {}) {
   return coach.listingStatus ?? (coach.status === "approved" ? "listed" : "unlisted");
+}
+
+function isSlotOccupiedStatus(status) {
+  return status !== "declined" && status !== "cancelled";
 }
 
 function getCompletedIncome(store, coachId) {
@@ -255,7 +260,7 @@ function isAllowedBookingCreate(currentStore, nextStore, user) {
     (item) =>
       item.coachId === booking.coachId &&
       item.slotId === booking.slotId &&
-      item.status !== "declined",
+      isSlotOccupiedStatus(item.status),
   );
   return Boolean(
     coach &&
@@ -956,7 +961,71 @@ app.get("/api/payment-config", (request, response) => {
   });
 });
 
+app.post("/api/bookings", async (request, response) => {
+  const store = await readStore();
+  const userId = getSessionUserId(request);
+  const user = store.users.find((item) => item.id === userId);
+  if (!user) {
+    response.status(401).json({ error: "LOGIN_REQUIRED" });
+    return;
+  }
+
+  const coach = store.coaches.find((item) => item.id === request.body.coachId);
+  const slot = coach?.slots.find((item) => item.id === request.body.slotId);
+  if (!coach || !slot) {
+    response.status(404).json({ error: "SLOT_NOT_FOUND" });
+    return;
+  }
+  if (
+    coach.status !== "approved" ||
+    getCoachListingStatus(coach) !== "listed" ||
+    !slot.enabled ||
+    coach.userId === user.id
+  ) {
+    response.status(409).json({ error: "SLOT_NOT_BOOKABLE" });
+    return;
+  }
+
+  const occupied = store.bookings.some(
+    (booking) =>
+      booking.coachId === coach.id &&
+      booking.slotId === slot.id &&
+      isSlotOccupiedStatus(booking.status),
+  );
+  if (occupied) {
+    response.status(409).json({ error: "SLOT_ALREADY_BOOKED" });
+    return;
+  }
+
+  const amount = Number(coach.price);
+  const platformFee = store.settings.commissionEnabled
+    ? amount * (Number(store.settings.commissionRate) / 100)
+    : 0;
+  const booking = {
+    id: `b_${randomString(9)}`,
+    userId: user.id,
+    coachId: coach.id,
+    slotId: slot.id,
+    amount,
+    platformFee,
+    coachIncome: amount - platformFee,
+    status: "reserved",
+    createdAt: new Date().toLocaleString("zh-CN", { hour12: false }),
+  };
+
+  store.bookings = [booking, ...store.bookings];
+  await writeStore(store);
+  response.json({ bookingId: booking.id, booking, store });
+});
+
 app.post("/api/payments/wechat/native", async (request, response) => {
+  const store = await readStore();
+  const userId = getSessionUserId(request);
+  const user = store.users.find((item) => item.id === userId);
+  if (!user) {
+    response.status(401).json({ error: "LOGIN_REQUIRED" });
+    return;
+  }
   const config = paymentConfigStatus();
   if (!config.configured) {
     response.status(503).json({
@@ -965,13 +1034,16 @@ app.post("/api/payments/wechat/native", async (request, response) => {
     });
     return;
   }
-
-  const store = await readStore();
   const booking = store.bookings.find((item) => item.id === request.body.bookingId);
   const coach = store.coaches.find((item) => item.id === booking?.coachId);
 
   if (!booking || !coach) {
     response.status(404).json({ error: "BOOKING_NOT_FOUND" });
+    return;
+  }
+
+  if (booking.userId !== user.id) {
+    response.status(403).json({ error: "BOOKING_FORBIDDEN" });
     return;
   }
 
@@ -981,6 +1053,24 @@ app.post("/api/payments/wechat/native", async (request, response) => {
   }
 
   try {
+    if (
+      booking.payment?.provider === "wechat_native" &&
+      booking.payment.state === "pending" &&
+      booking.payment.codeUrl
+    ) {
+      const qrDataUrl = await QRCode.toDataURL(booking.payment.codeUrl, {
+        margin: 1,
+        width: 220,
+      });
+      response.json({
+        codeUrl: booking.payment.codeUrl,
+        qrDataUrl,
+        outTradeNo: booking.payment.outTradeNo,
+        reused: true,
+      });
+      return;
+    }
+
     const outTradeNo = booking.payment?.outTradeNo || makeOutTradeNo();
     const requestPath = "/v3/pay/transactions/native";
     const body = JSON.stringify({
@@ -1051,6 +1141,21 @@ app.post("/api/payments/mock-success", async (request, response) => {
     return;
   }
   const store = await readStore();
+  const userId = getSessionUserId(request);
+  const user = store.users.find((item) => item.id === userId);
+  if (!user) {
+    response.status(401).json({ error: "LOGIN_REQUIRED" });
+    return;
+  }
+  const target = store.bookings.find((booking) => booking.id === request.body.bookingId);
+  if (!target) {
+    response.status(404).json({ error: "BOOKING_NOT_FOUND" });
+    return;
+  }
+  if (target.userId !== user.id) {
+    response.status(403).json({ error: "BOOKING_FORBIDDEN" });
+    return;
+  }
   store.bookings = store.bookings.map((booking) =>
     booking.id === request.body.bookingId ? { ...booking, status: "paid" } : booking,
   );
@@ -1060,10 +1165,21 @@ app.post("/api/payments/mock-success", async (request, response) => {
 
 app.post("/api/payments/manual-confirmation", async (request, response) => {
   const store = await readStore();
+  const userId = getSessionUserId(request);
+  const user = store.users.find((item) => item.id === userId);
+  if (!user) {
+    response.status(401).json({ error: "LOGIN_REQUIRED" });
+    return;
+  }
   const booking = store.bookings.find((item) => item.id === request.body.bookingId);
 
   if (!booking) {
     response.status(404).json({ error: "BOOKING_NOT_FOUND" });
+    return;
+  }
+
+  if (booking.userId !== user.id) {
+    response.status(403).json({ error: "BOOKING_FORBIDDEN" });
     return;
   }
 

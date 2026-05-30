@@ -72,14 +72,25 @@ assert(
   "管理员备份接口未上线或未正确保护",
 );
 
+const bookingCreateResult = await readJson("/api/bookings", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ coachId: "__missing__", slotId: "__missing__" }),
+});
+assert(
+  bookingCreateResult.response.status === 401 &&
+    bookingCreateResult.body.error === "LOGIN_REQUIRED",
+  "预约创建接口未上线或未正确保护",
+);
+
 const manualResult = await readJson("/api/payments/manual-confirmation", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({ bookingId: "__readiness_missing_booking__" }),
 });
 assert(
-  manualResult.response.status === 404 && manualResult.body.error === "BOOKING_NOT_FOUND",
-  "人工收款确认接口未上线或行为异常",
+  manualResult.response.status === 401 && manualResult.body.error === "LOGIN_REQUIRED",
+  "人工收款确认接口未上线或未正确保护",
 );
 
 console.log(
