@@ -735,6 +735,14 @@ function signWechatRequest(method, requestPath, body) {
   return `WECHATPAY2-SHA256-RSA2048 mchid="${process.env.WECHAT_PAY_MCH_ID}",nonce_str="${nonce}",signature="${signature}",timestamp="${timestamp}",serial_no="${process.env.WECHAT_PAY_SERIAL_NO}"`;
 }
 
+function signWechatJsapiPay(appId, timeStamp, nonceStr, packageValue) {
+  const message = `${appId}\n${timeStamp}\n${nonceStr}\n${packageValue}\n`;
+  return crypto
+    .createSign("RSA-SHA256")
+    .update(message)
+    .sign(getMerchantPrivateKey(), "base64");
+}
+
 function verifyWechatSignature(headers, body, publicKey) {
   const timestamp = headers["wechatpay-timestamp"];
   const nonce = headers["wechatpay-nonce"];
@@ -1129,6 +1137,120 @@ app.post("/api/payments/wechat/native", async (request, response) => {
       codeUrl: responseBody.code_url,
       qrDataUrl,
       outTradeNo,
+    });
+  } catch (error) {
+    response.status(500).json({ error: "WECHAT_PAY_ERROR", message: error.message });
+  }
+});
+
+app.post("/api/payments/wechat/jsapi", async (request, response) => {
+  const store = await readStore();
+  const userId = getSessionUserId(request);
+  const user = store.users.find((item) => item.id === userId);
+  if (!user) {
+    response.status(401).json({ error: "LOGIN_REQUIRED" });
+    return;
+  }
+  const config = paymentConfigStatus();
+  if (!config.configured) {
+    response.status(503).json({
+      error: "WECHAT_PAY_NOT_CONFIGURED",
+      missing: config.missing,
+    });
+    return;
+  }
+  if (!user.wechatOpenid) {
+    response.status(409).json({ error: "WECHAT_OPENID_REQUIRED" });
+    return;
+  }
+
+  const booking = store.bookings.find((item) => item.id === request.body.bookingId);
+  const coach = store.coaches.find((item) => item.id === booking?.coachId);
+  if (!booking || !coach) {
+    response.status(404).json({ error: "BOOKING_NOT_FOUND" });
+    return;
+  }
+  if (booking.userId !== user.id) {
+    response.status(403).json({ error: "BOOKING_FORBIDDEN" });
+    return;
+  }
+  if (booking.status !== "reserved") {
+    response.status(409).json({ error: "BOOKING_NOT_PAYABLE" });
+    return;
+  }
+
+  try {
+    let prepayId = booking.payment?.provider === "wechat_jsapi" ? booking.payment.prepayId : "";
+    let outTradeNo = booking.payment?.provider === "wechat_jsapi" ? booking.payment.outTradeNo : "";
+
+    if (!prepayId) {
+      outTradeNo = makeOutTradeNo();
+      const requestPath = "/v3/pay/transactions/jsapi";
+      const body = JSON.stringify({
+        appid: process.env.WECHAT_PAY_APPID,
+        mchid: process.env.WECHAT_PAY_MCH_ID,
+        description: `教练预约-${coach.name}`.slice(0, 127),
+        out_trade_no: outTradeNo,
+        notify_url: process.env.WECHAT_PAY_NOTIFY_URL,
+        amount: {
+          total: Math.max(1, Math.round(booking.amount * 100)),
+          currency: "CNY",
+        },
+        payer: {
+          openid: user.wechatOpenid,
+        },
+      });
+
+      const wxResponse = await fetch(`https://api.mch.weixin.qq.com${requestPath}`, {
+        method: "POST",
+        headers: {
+          Authorization: signWechatRequest("POST", requestPath, body),
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body,
+      });
+      const responseBody = await wxResponse.json();
+      if (!wxResponse.ok) {
+        response.status(wxResponse.status).json({
+          error: "WECHAT_PAY_CREATE_FAILED",
+          detail: responseBody,
+        });
+        return;
+      }
+      prepayId = responseBody.prepay_id;
+      store.bookings = store.bookings.map((item) =>
+        item.id === booking.id
+          ? {
+              ...item,
+              payment: {
+                provider: "wechat_jsapi",
+                state: "pending",
+                outTradeNo,
+                prepayId,
+                createdAt: new Date().toISOString(),
+              },
+            }
+          : item,
+      );
+      await writeStore(store);
+    }
+
+    const appId = process.env.WECHAT_PAY_APPID;
+    const timeStamp = Math.floor(Date.now() / 1000).toString();
+    const nonceStr = randomString();
+    const packageValue = `prepay_id=${prepayId}`;
+    response.json({
+      payParams: {
+        appId,
+        timeStamp,
+        nonceStr,
+        package: packageValue,
+        signType: "RSA",
+        paySign: signWechatJsapiPay(appId, timeStamp, nonceStr, packageValue),
+      },
+      outTradeNo,
+      prepayId,
     });
   } catch (error) {
     response.status(500).json({ error: "WECHAT_PAY_ERROR", message: error.message });

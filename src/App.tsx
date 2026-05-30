@@ -86,10 +86,11 @@ type Booking = {
   note?: string;
   createdAt: string;
   payment?: {
-    provider: "wechat_native" | "manual_confirmation";
+    provider: "wechat_native" | "wechat_jsapi" | "manual_confirmation";
     state: "pending" | "paid";
     outTradeNo: string;
     codeUrl?: string;
+    prepayId?: string;
     createdAt: string;
     paidAt?: string;
     transactionId?: string;
@@ -240,6 +241,46 @@ function getApiErrorMessage(body: unknown, fallback: string) {
     detail?: { code?: string; message?: string };
   };
   return payload.detail?.message || payload.message || payload.detail?.code || payload.error || fallback;
+}
+
+function isWechatBrowser() {
+  return /MicroMessenger/i.test(window.navigator.userAgent);
+}
+
+function invokeWechatPay(payParams: Record<string, string>) {
+  return new Promise<string>((resolve, reject) => {
+    const start = () => {
+      const bridge = (
+        window as Window & {
+          WeixinJSBridge?: {
+            invoke: (
+              name: string,
+              params: Record<string, string>,
+              callback: (result: { err_msg?: string }) => void,
+            ) => void;
+          };
+        }
+      ).WeixinJSBridge;
+      if (!bridge) {
+        reject(new Error("微信支付控件未就绪，请刷新后重试"));
+        return;
+      }
+      bridge.invoke("getBrandWCPayRequest", payParams, (result) => {
+        const message = result.err_msg || "";
+        if (message.includes(":ok")) {
+          resolve(message);
+          return;
+        }
+        reject(new Error(message.includes(":cancel") ? "用户已取消支付" : message || "微信支付未完成"));
+      });
+    };
+
+    if ((window as Window & { WeixinJSBridge?: unknown }).WeixinJSBridge) {
+      start();
+      return;
+    }
+    document.addEventListener("WeixinJSBridgeReady", start, { once: true });
+  });
 }
 
 function loadStore(): Store {
@@ -2194,12 +2235,15 @@ function PaymentModal({
   const [allowMock, setAllowMock] = useState(false);
   const [error, setError] = useState("");
   const [manualRequested, setManualRequested] = useState(false);
+  const [paymentNotice, setPaymentNotice] = useState("");
 
   useEffect(() => {
     if (!booking) return;
     let stopped = false;
+    const inWechat = isWechatBrowser();
     setLoading(true);
     setError("");
+    setPaymentNotice("");
     setMissing([]);
     setQrDataUrl("");
     setCodeUrl("");
@@ -2214,7 +2258,7 @@ function PaymentModal({
           setMissing(config.missing ?? []);
           return null;
         }
-        return fetch("/api/payments/wechat/native", {
+        return fetch(inWechat ? "/api/payments/wechat/jsapi" : "/api/payments/wechat/native", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ bookingId: booking.id }),
@@ -2229,8 +2273,16 @@ function PaymentModal({
         }
         return response.json();
       })
-      .then((payment) => {
+      .then(async (payment) => {
         if (!payment || stopped) return;
+        if (payment.payParams) {
+          setPaymentNotice("正在拉起微信支付...");
+          await invokeWechatPay(payment.payParams);
+          if (!stopped) {
+            setPaymentNotice("支付已完成，正在等待微信回调确认订单。");
+          }
+          return;
+        }
         setQrDataUrl(payment.qrDataUrl);
         setCodeUrl(payment.codeUrl);
       })
@@ -2318,7 +2370,14 @@ function PaymentModal({
         <strong>{formatMoney(booking.amount)}</strong>
         {loading && <p className="muted">正在创建微信支付订单...</p>}
         {qrDataUrl && (
-          <p className="muted">请使用微信扫码支付。支付成功回调后，订单会自动进入平台托管。</p>
+          <p className="muted">
+            请使用另一台手机扫码支付；微信内同屏长按识别可能不可用。支付成功回调后，订单会自动进入平台托管。
+          </p>
+        )}
+        {paymentNotice && (
+          <div className="payment-success">
+            <strong>{paymentNotice}</strong>
+          </div>
         )}
         {codeUrl && <textarea className="code-url" readOnly value={codeUrl} />}
         {missing.length > 0 && (

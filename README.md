@@ -88,6 +88,8 @@ WECHAT_PAY_PLATFORM_PUBLIC_KEY_PATH=/path/to/wechatpay_public_key.pem
 
 也可以用 `WECHAT_PAY_PRIVATE_KEY` 和 `WECHAT_PAY_PLATFORM_PUBLIC_KEY` 直接传 PEM 内容。回调验签默认必须配置微信支付平台公钥；仅测试环境可设置 `WECHAT_PAY_SKIP_NOTIFY_VERIFY=true`。
 
+用户在微信内置浏览器访问时会自动走 JSAPI 支付，直接拉起微信支付；在电脑或非微信浏览器访问时走 Native 扫码支付。商户平台需要同时确认当前公众号 AppID 已绑定该商户号，并开通 JSAPI 支付和 Native 支付。不要依赖用户在微信里长按识别同屏 Native 二维码，部分商户会被微信提示不支持这种方式。
+
 在微信支付参数未配置前，用户支付弹窗会显示“已付款，提交平台确认”。订单进入“待平台确认收款”后，管理员在“订单收款与流转”里点击“确认收款”，订单会继续进入“待教练确认”。这适合先用转账、人工核销或线下收款方式启动试运营；正式收款上线后再补齐上面的微信支付环境变量。
 
 管理员后台的“微信支付配置”面板会显示网页登录入口、推荐支付回调地址、缺失环境变量和逐步配置清单。配置时先登录 [微信支付商户平台](https://pay.weixin.qq.com/)，再把商户号、API v3 密钥、证书序列号、商户私钥、微信支付平台公钥和回调地址填到 Render Environment。
