@@ -263,6 +263,7 @@ export function App() {
   const [portal, setPortal] = useState<Portal>(() => getPortalFromPath());
   const [selectedCoachId, setSelectedCoachId] = useState("c1");
   const [paymentBookingId, setPaymentBookingId] = useState<string | null>(null);
+  const [bookingError, setBookingError] = useState("");
   const [query, setQuery] = useState("");
 
   useEffect(() => {
@@ -340,21 +341,28 @@ export function App() {
     approvedCoaches.find((coach) => coach.id === selectedCoachId) ??
     approvedCoaches[0];
 
-  function persistStore(nextStore: Store) {
+  async function persistStore(nextStore: Store) {
     window.localStorage.setItem(storageKey, JSON.stringify(nextStore));
-    if (dataMode !== "api") return;
-    fetch("/api/store", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(nextStore),
-    }).catch(() => setDataMode("local"));
+    if (dataMode !== "api") return true;
+    try {
+      const response = await fetch("/api/store", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(nextStore),
+      });
+      if (!response.ok) return false;
+      return true;
+    } catch {
+      setDataMode("local");
+      return false;
+    }
   }
 
   const setStorePatch = (updater: (draft: Store) => Store) => {
     const nextStore = updater(storeRef.current);
     storeRef.current = nextStore;
     setStore(nextStore);
-    persistStore(nextStore);
+    return persistStore(nextStore);
   };
 
   async function refreshAuthState() {
@@ -433,8 +441,9 @@ export function App() {
     }));
   }
 
-  function bookSlot(coach: Coach, slot: Slot) {
+  async function bookSlot(coach: Coach, slot: Slot) {
     if (!currentUser || !isListedCoach(coach)) return;
+    setBookingError("");
     const amount = coach.price;
     const platformFee = store.settings.commissionEnabled
       ? amount * (store.settings.commissionRate / 100)
@@ -450,8 +459,19 @@ export function App() {
       status: "reserved",
       createdAt: new Date().toLocaleString("zh-CN", { hour12: false }),
     };
-    setStorePatch((draft) => ({ ...draft, bookings: [booking, ...draft.bookings] }));
-    setPaymentBookingId(booking.id);
+    const saved = await setStorePatch((draft) => ({ ...draft, bookings: [booking, ...draft.bookings] }));
+    if (saved) {
+      setPaymentBookingId(booking.id);
+      return;
+    }
+    const rolledBackStore = {
+      ...storeRef.current,
+      bookings: storeRef.current.bookings.filter((item) => item.id !== booking.id),
+    };
+    storeRef.current = rolledBackStore;
+    setStore(rolledBackStore);
+    window.localStorage.setItem(storageKey, JSON.stringify(rolledBackStore));
+    setBookingError("预约保存失败，请刷新后重新选择时间。");
   }
 
   function payBooking(id: string) {
@@ -650,6 +670,7 @@ export function App() {
               users={store.users}
               currentUser={currentUser}
               selectedCoach={selectedCoach}
+              bookingError={bookingError}
               query={query}
               onQuery={setQuery}
               onSelectCoach={setSelectedCoachId}
@@ -902,6 +923,7 @@ function UserDesk({
   users,
   currentUser,
   selectedCoach,
+  bookingError,
   query,
   onQuery,
   onSelectCoach,
@@ -917,6 +939,7 @@ function UserDesk({
   users: User[];
   currentUser: User;
   selectedCoach?: Coach;
+  bookingError: string;
   query: string;
   onQuery: (value: string) => void;
   onSelectCoach: (id: string) => void;
@@ -1070,6 +1093,7 @@ function UserDesk({
             onNote={onNote}
             onReview={onReview}
           />
+          {bookingError && <p className="error-text">{bookingError}</p>}
         </div>
       </div>
       {confirmSlot && (
