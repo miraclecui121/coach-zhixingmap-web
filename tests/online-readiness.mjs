@@ -16,8 +16,19 @@ async function readJson(path, options) {
   return { response, body };
 }
 
+async function readText(path) {
+  const response = await fetch(`${appUrl}${path}`);
+  return { response, body: await response.text() };
+}
+
 const health = await readJson("/api/health");
 assert(health.response.ok && health.body.ok === true, "线上健康检查失败");
+
+for (const portal of ["/user", "/coach", "/admin"]) {
+  const result = await readText(portal);
+  assert(result.response.ok, `${portal} 入口不可访问`);
+  assert(result.body.includes('<div id="root"></div>'), `${portal} 未返回前端应用`);
+}
 
 const paymentConfig = await readJson("/api/payment-config");
 assert(paymentConfig.response.ok, "支付配置接口不可用");
@@ -80,6 +91,11 @@ console.log(
       users: store.users.length,
       coaches: store.coaches.length,
       approvedCoaches: store.coaches.filter((coach) => coach.status === "approved").length,
+      listedCoaches: store.coaches.filter(
+        (coach) =>
+          coach.status === "approved" &&
+          (coach.listingStatus ?? "listed") === "listed",
+      ).length,
       bookings: store.bookings.length,
       badBookings: badBookings.length,
       manualConfirmationReady: true,

@@ -19,6 +19,10 @@ async function clickText(page, text) {
   await page.getByText(text, { exact: true }).click();
 }
 
+async function gotoPortal(page, portal) {
+  await page.goto(`${appUrl}${portal.replace(/^\//, "")}`, { waitUntil: "networkidle" });
+}
+
 async function startServer() {
   await mkdir(path.dirname(dataFile), { recursive: true });
   const child = spawn("node", ["server.mjs"], {
@@ -69,7 +73,7 @@ async function main() {
       body: JSON.stringify(seedState),
     });
     assert(unauthWrite.status === 401, "未登录请求不应能写入共享 store");
-    const oauthStart = await fetch(`${appUrl}api/auth/wechat/start?redirect=/`, {
+    const oauthStart = await fetch(`${appUrl}api/auth/wechat/start?redirect=/coach`, {
       redirect: "manual",
     });
     assert(oauthStart.status === 302, "微信授权入口应重定向到微信 OAuth");
@@ -93,11 +97,13 @@ async function main() {
       "有效 state 不应被误判为已过期",
     );
 
-    await page.goto(appUrl, { waitUntil: "networkidle" });
+    await gotoPortal(page, "/user");
 
-    await page.getByText("教练预约商城 H5").waitFor();
+    await page.getByRole("heading", { name: "用户预约入口" }).waitFor();
     await page.getByText("服务端共享数据").waitFor();
     assert((await page.locator(".coach-card").count()) === 0, "空环境不应预置教练数据");
+    assert((await page.getByText("教练中心", { exact: true }).count()) === 0, "用户入口不应展示角色切换");
+    assert((await page.getByText("管理后台", { exact: true }).count()) === 0, "用户入口不应展示角色切换");
 
     const login = async (openid) => {
       await page.getByPlaceholder("测试 openid 登录").fill(openid);
@@ -108,7 +114,7 @@ async function main() {
     await page.getByPlaceholder("测试 openid", { exact: true }).fill("coach-openid");
     await clickText(page, "开发注册");
     await page.locator(".current-account").filter({ hasText: "测试教练" }).waitFor();
-    await clickText(page, "教练中心");
+    await gotoPortal(page, "/coach");
     await page.getByRole("heading", { name: "申请成为教练" }).waitFor();
     await page.getByLabel("展示名称").fill("测试教练");
     await page.getByLabel("单次价格").fill("499");
@@ -127,6 +133,7 @@ async function main() {
             (coach) =>
               coach.name === "测试教练" &&
               coach.status === "pending" &&
+              coach.listingStatus === "unlisted" &&
               coach.title === "申请阶段填写的教练标题" &&
               coach.price === 499 &&
               coach.slots.some((slot) => slot.date === "2026-05-28" && slot.time === "14:30-15:30"),
@@ -137,7 +144,7 @@ async function main() {
     await clickText(page, "退出");
     await login("admin");
     await page.locator(".current-account").filter({ hasText: "管理员" }).waitFor();
-    await clickText(page, "管理后台");
+    await gotoPortal(page, "/admin");
     await page.getByRole("heading", { name: "管理后台" }).waitFor();
     await page.getByText("微信支付配置").waitFor();
     await page.getByRole("link", { name: "登录微信支付商户平台" }).waitFor();
@@ -153,11 +160,37 @@ async function main() {
       .filter({ hasText: "测试教练" })
       .getByRole("button", { name: "通过审核" })
       .click();
+    await page.waitForFunction(() => {
+      return fetch("/api/store")
+        .then((response) => response.json())
+        .then((state) =>
+          state.coaches.some(
+            (coach) =>
+              coach.name === "测试教练" &&
+              coach.status === "approved" &&
+              coach.listingStatus === "unlisted",
+          ),
+        );
+    });
+    await page
+      .locator(".admin-row")
+      .filter({ hasText: "测试教练" })
+      .getByRole("button", { name: "上架" })
+      .click();
+    await page.waitForFunction(() => {
+      return fetch("/api/store")
+        .then((response) => response.json())
+        .then((state) =>
+          state.coaches.some(
+            (coach) => coach.name === "测试教练" && coach.listingStatus === "listed",
+          ),
+        );
+    });
 
     await clickText(page, "退出");
     await login("coach-openid");
     await page.locator(".current-account").filter({ hasText: "测试教练" }).waitFor();
-    await clickText(page, "教练中心");
+    await gotoPortal(page, "/coach");
     await page.getByLabel("单次价格").fill("599");
     await page.getByLabel("标题").fill("真实环境测试教练");
     await page.getByLabel("教练介绍").fill("这是从空环境注册并审核通过的教练。");
@@ -181,6 +214,10 @@ async function main() {
     await page.getByPlaceholder("测试 openid", { exact: true }).fill("user-openid");
     await clickText(page, "开发注册");
     await page.locator(".current-account").filter({ hasText: "测试用户" }).waitFor();
+    await gotoPortal(page, "/admin");
+    await page.getByRole("heading", { name: "无管理员权限" }).waitFor();
+    assert((await page.getByText("抽佣设置").count()) === 0, "非管理员不应看到后台功能");
+    await gotoPortal(page, "/user");
     await page.locator(".coach-card").filter({ hasText: "真实环境测试教练" }).waitFor();
     const blockedAdminMutation = await page.evaluate(async () => {
       const state = await fetch("/api/store").then((response) => response.json());
@@ -209,7 +246,7 @@ async function main() {
     await clickText(page, "退出");
     await login("admin");
     await page.locator(".current-account").filter({ hasText: "管理员" }).waitFor();
-    await clickText(page, "管理后台");
+    await gotoPortal(page, "/admin");
     await page.getByText("订单收款与流转").waitFor();
     await page
       .locator(".admin-order-row")
@@ -220,6 +257,7 @@ async function main() {
     await clickText(page, "退出");
     await login("user-openid");
     await page.locator(".current-account").filter({ hasText: "测试用户" }).waitFor();
+    await gotoPortal(page, "/user");
     await page.getByText("待教练确认").waitFor();
     const noteText = "想重点聊转型路径和行动计划。";
     await page.getByPlaceholder("给教练捎句话").fill(noteText);
@@ -228,7 +266,7 @@ async function main() {
     await clickText(page, "退出");
     await login("coach-openid");
     await page.locator(".current-account").filter({ hasText: "测试教练" }).waitFor();
-    await clickText(page, "教练中心");
+    await gotoPortal(page, "/coach");
     await page.getByText(`留言：${noteText}`).waitFor();
     await page.getByRole("button", { name: "接受", exact: true }).click();
     await page.getByText("教练已接受").waitFor();
@@ -238,6 +276,7 @@ async function main() {
     await clickText(page, "退出");
     await login("user-openid");
     await page.locator(".current-account").filter({ hasText: "测试用户" }).waitFor();
+    await gotoPortal(page, "/user");
     await page.getByText("已完成待评价").waitFor();
     const reviewContent = "教练很具体，预约体验顺畅。";
     const reviewBox = page.locator(".review-box").first();
@@ -248,9 +287,10 @@ async function main() {
     await clickText(page, "退出");
     await login("coach-openid");
     await page.locator(".current-account").filter({ hasText: "测试教练" }).waitFor();
-    await clickText(page, "教练中心");
-    assert(await page.getByText("申请提现").isEnabled(), "完成订单后教练应可申请提现");
-    await page.getByText("申请提现").click();
+    await gotoPortal(page, "/coach");
+    const withdrawButton = page.getByRole("button", { name: /申请提现/ });
+    assert(await withdrawButton.isEnabled(), "完成订单后教练应可申请提现");
+    await withdrawButton.click();
     await page.waitForFunction(() => {
       return fetch("/api/store")
         .then((response) => response.json())
@@ -262,7 +302,7 @@ async function main() {
     await clickText(page, "退出");
     await login("admin");
     await page.locator(".current-account").filter({ hasText: "管理员" }).waitFor();
-    await clickText(page, "管理后台");
+    await gotoPortal(page, "/admin");
     await page.getByRole("heading", { name: "管理后台" }).waitFor();
     await page.locator(".switch").click();
     await page.getByLabel("抽佣比例").fill("15");
@@ -295,6 +335,31 @@ async function main() {
       .filter({ hasText: "平台扣点" })
       .getByRole("button", { name: "通过", exact: true })
       .click();
+    await page
+      .locator(".admin-row")
+      .filter({ hasText: "测试教练" })
+      .getByRole("button", { name: "下架" })
+      .click();
+    await page.waitForFunction(() => {
+      return fetch("/api/store")
+        .then((response) => response.json())
+        .then((state) =>
+          state.coaches.some(
+            (coach) => coach.name === "测试教练" && coach.listingStatus === "unlisted",
+          ),
+        );
+    });
+    await clickText(page, "退出");
+    await login("user-openid");
+    await gotoPortal(page, "/user");
+    assert(
+      (await page.locator(".coach-card").filter({ hasText: "真实环境测试教练" }).count()) === 0,
+      "下架教练不应继续出现在用户列表",
+    );
+    await page.getByText("已评价").waitFor();
+    await clickText(page, "退出");
+    await login("admin");
+    await gotoPortal(page, "/admin");
 
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.getByText("注册用户").waitFor();
@@ -309,8 +374,13 @@ async function main() {
       "新评价应写入服务端共享数据",
     );
     assert(
-      state.coaches.some((coach) => coach.name === "测试教练" && coach.status === "approved"),
-      "管理员应能审核通过教练",
+      state.coaches.some(
+        (coach) =>
+          coach.name === "测试教练" &&
+          coach.status === "approved" &&
+          coach.listingStatus === "unlisted",
+      ),
+      "管理员应能审核通过并下架教练",
     );
     assert(
       state.withdrawals.some((withdrawal) => withdrawal.status === "approved"),

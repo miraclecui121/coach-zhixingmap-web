@@ -145,6 +145,10 @@ function getCoachForUser(store, userId) {
   return store.coaches.find((coach) => coach.userId === userId);
 }
 
+function getCoachListingStatus(coach = {}) {
+  return coach.listingStatus ?? (coach.status === "approved" ? "listed" : "unlisted");
+}
+
 function getCompletedIncome(store, coachId) {
   return store.bookings
     .filter(
@@ -185,6 +189,7 @@ function isAllowedCoachApplication(currentStore, nextStore, user) {
     !newCoach ||
     newCoach.userId !== user.id ||
     newCoach.status !== "pending" ||
+    getCoachListingStatus(newCoach) !== "unlisted" ||
     currentStore.coaches.some((coach) => coach.userId === user.id)
   ) {
     return false;
@@ -207,7 +212,24 @@ function isAllowedOwnCoachUpdate(currentStore, nextStore, user) {
   if (
     nextCoach.id !== currentCoach.id ||
     nextCoach.userId !== currentCoach.userId ||
-    nextCoach.status !== currentCoach.status
+    nextCoach.status !== currentCoach.status ||
+    nextCoach.listingStatus !== currentCoach.listingStatus
+  ) {
+    return false;
+  }
+  return sameCollectionExcept(currentStore.coaches, nextStore.coaches, [currentCoach.id]);
+}
+
+function isAllowedCoachResubmit(currentStore, nextStore, user) {
+  const currentCoach = getCoachForUser(currentStore, user.id);
+  if (!currentCoach || currentCoach.status !== "rejected") return false;
+  const nextCoach = nextStore.coaches.find((coach) => coach.id === currentCoach.id);
+  if (!nextCoach) return false;
+  if (
+    nextCoach.id !== currentCoach.id ||
+    nextCoach.userId !== currentCoach.userId ||
+    nextCoach.status !== "pending" ||
+    getCoachListingStatus(nextCoach) !== "unlisted"
   ) {
     return false;
   }
@@ -240,6 +262,7 @@ function isAllowedBookingCreate(currentStore, nextStore, user) {
       slot?.enabled &&
       !occupied &&
       coach.status === "approved" &&
+      getCoachListingStatus(coach) === "listed" &&
       coach.userId !== user.id &&
       booking.userId === user.id &&
       booking.status === "reserved" &&
@@ -358,7 +381,8 @@ function isAuthorizedStoreUpdate(currentStore, nextStore, user) {
   if (!sameJson(currentStore.coaches, nextStore.coaches)) {
     if (
       !isAllowedCoachApplication(currentStore, nextStore, user) &&
-      !isAllowedOwnCoachUpdate(currentStore, nextStore, user)
+      !isAllowedOwnCoachUpdate(currentStore, nextStore, user) &&
+      !isAllowedCoachResubmit(currentStore, nextStore, user)
     ) {
       return false;
     }

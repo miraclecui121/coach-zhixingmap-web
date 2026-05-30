@@ -24,8 +24,9 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-type Role = "user" | "coach" | "admin";
+type Portal = "user" | "coach" | "admin";
 type CoachStatus = "pending" | "approved" | "rejected";
+type CoachListingStatus = "listed" | "unlisted";
 type BookingStatus =
   | "reserved"
   | "payment_pending"
@@ -64,6 +65,7 @@ type Coach = {
   name: string;
   title: string;
   status: CoachStatus;
+  listingStatus?: CoachListingStatus;
   price: number;
   intro: string;
   background: string;
@@ -180,6 +182,50 @@ const coachStatusText: Record<CoachStatus, string> = {
   rejected: "已拒绝",
 };
 
+const coachListingStatusText: Record<CoachListingStatus, string> = {
+  listed: "已上架",
+  unlisted: "未上架",
+};
+
+const portalMeta: Record<Portal, { title: string; description: string; loginText: string; icon: typeof Users }> = {
+  user: {
+    title: "用户预约入口",
+    description: "只显示教练列表、预约支付、订单待办、评价打分。",
+    loginText: "登录后可以预约教练、支付订单并完成评价。",
+    icon: Users,
+  },
+  coach: {
+    title: "教练工作台",
+    description: "只显示教练申请、资料排期、订单处理、评价查看、提现。",
+    loginText: "登录后可以申请成为教练，或进入已通过审核的教练工作台。",
+    icon: UserRoundCheck,
+  },
+  admin: {
+    title: "管理员后台",
+    description: "只显示教练审核、上下架、分佣、订单、提现与数据备份。",
+    loginText: "登录后会校验管理员权限，非管理员不会展示后台功能。",
+    icon: ShieldCheck,
+  },
+};
+
+function getPortalFromPath(pathname = window.location.pathname): Portal {
+  const first = pathname.split("/").filter(Boolean)[0];
+  if (first === "coach" || first === "admin") return first;
+  return "user";
+}
+
+function getPortalPath(portal: Portal) {
+  return `/${portal}`;
+}
+
+function getCoachListingStatus(coach: Coach): CoachListingStatus {
+  return coach.listingStatus ?? (coach.status === "approved" ? "listed" : "unlisted");
+}
+
+function isListedCoach(coach: Coach) {
+  return coach.status === "approved" && getCoachListingStatus(coach) === "listed";
+}
+
 function loadStore(): Store {
   const cached = window.localStorage.getItem(storageKey);
   if (!cached) return structuredClone(seedStore);
@@ -214,10 +260,19 @@ export function App() {
     allowDevLogin: false,
   });
   const [sessionUser, setSessionUser] = useState<User | undefined>();
-  const [role, setRole] = useState<Role>("user");
+  const [portal, setPortal] = useState<Portal>(() => getPortalFromPath());
   const [selectedCoachId, setSelectedCoachId] = useState("c1");
   const [paymentBookingId, setPaymentBookingId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+
+  useEffect(() => {
+    if (window.location.pathname === "/") {
+      window.history.replaceState(null, "", getPortalPath("user"));
+    }
+    const syncPortal = () => setPortal(getPortalFromPath());
+    window.addEventListener("popstate", syncPortal);
+    return () => window.removeEventListener("popstate", syncPortal);
+  }, []);
 
   useEffect(() => {
     let ignore = false;
@@ -273,7 +328,7 @@ export function App() {
     () =>
       store.coaches.filter(
         (coach) =>
-          coach.status === "approved" &&
+          isListedCoach(coach) &&
           [coach.name, coach.title, coach.intro, coach.specialties.join(" ")]
             .join(" ")
             .toLowerCase()
@@ -326,7 +381,6 @@ export function App() {
     });
     if (!response.ok) return;
     await refreshAuthState();
-    setRole("user");
   }
 
   async function registerUser(name: string, phone: string) {
@@ -335,7 +389,6 @@ export function App() {
     );
     if (existing) {
       await devLogin(phone, existing.name);
-      setRole("user");
       return;
     }
     await devLogin(phone, name);
@@ -344,36 +397,8 @@ export function App() {
   const currentCoach = currentUser
     ? store.coaches.find((coach) => coach.userId === currentUser.id)
     : undefined;
-  const canUseCoachDesk = Boolean(currentCoach);
   const canUseAdminDesk = Boolean(currentUser?.isAdmin);
-  const userTodoCount = currentUser
-    ? store.bookings.filter(
-        (booking) =>
-          booking.userId === currentUser.id &&
-          (booking.status === "reserved" ||
-            booking.status === "payment_pending" ||
-            booking.status === "paid" ||
-            booking.status === "accepted" ||
-            booking.status === "completed"),
-      ).length
-    : 0;
-  const coachTodoCount = currentCoach
-    ? store.bookings.filter(
-        (booking) =>
-          booking.coachId === currentCoach.id &&
-          (booking.status === "paid" || booking.status === "accepted"),
-      ).length
-    : 0;
-  const adminTodoCount = canUseAdminDesk
-    ? store.coaches.filter((coach) => coach.status === "pending").length +
-      store.withdrawals.filter((withdrawal) => withdrawal.status === "pending").length
-    : 0;
-
-  function switchRole(nextRole: Role) {
-    if (nextRole === "coach" && !currentUser) return;
-    if (nextRole === "admin" && !canUseAdminDesk) return;
-    setRole(nextRole);
-  }
+  const portalPath = getPortalPath(portal);
 
   function applyCoach(
     application: Pick<Coach, "name" | "title" | "price" | "intro" | "background" | "specialties" | "slots">,
@@ -381,7 +406,6 @@ export function App() {
   ) {
     if (!currentUser) return;
     if (store.coaches.some((coach) => coach.userId === currentUser.id)) {
-      setRole("coach");
       return;
     }
     const coachId = makeId("c");
@@ -398,6 +422,7 @@ export function App() {
           name: application.name,
           title: application.title,
           status,
+          listingStatus: "unlisted",
           price: application.price,
           intro: application.intro,
           background: application.background,
@@ -406,11 +431,10 @@ export function App() {
         },
       ],
     }));
-    setRole("coach");
   }
 
   function bookSlot(coach: Coach, slot: Slot) {
-    if (!currentUser) return;
+    if (!currentUser || !isListedCoach(coach)) return;
     const amount = coach.price;
     const platformFee = store.settings.commissionEnabled
       ? amount * (store.settings.commissionRate / 100)
@@ -602,6 +626,8 @@ export function App() {
   return (
     <main>
       <Header
+        portal={portal}
+        portalPath={portalPath}
         currentUser={currentUser}
         dataMode={dataMode}
         authConfig={authConfig}
@@ -610,41 +636,11 @@ export function App() {
         onLogout={async () => {
           await fetch("/api/auth/logout", { method: "POST" }).catch(() => undefined);
           setSessionUser(undefined);
-          setRole("user");
         }}
       />
 
-      <div className="shell">
-        <aside className="rail">
-          <button
-            className={role === "user" ? "active" : ""}
-            onClick={() => switchRole("user")}
-          >
-            <Users size={18} />
-            <span>用户商城</span>
-            {userTodoCount > 0 && <em className="nav-badge">{userTodoCount}</em>}
-          </button>
-          <button
-            className={role === "coach" ? "active" : ""}
-            disabled={!currentUser}
-            onClick={() => switchRole("coach")}
-          >
-            <UserRoundCheck size={18} />
-            <span>教练中心</span>
-            {coachTodoCount > 0 && <em className="nav-badge">{coachTodoCount}</em>}
-          </button>
-          <button
-            className={role === "admin" ? "active" : ""}
-            disabled={!currentUser || !canUseAdminDesk}
-            onClick={() => switchRole("admin")}
-          >
-            <ShieldCheck size={18} />
-            <span>管理后台</span>
-            {adminTodoCount > 0 && <em className="nav-badge">{adminTodoCount}</em>}
-          </button>
-        </aside>
-
-        {role === "user" &&
+      <div className="shell single-workspace">
+        {portal === "user" &&
           (currentUser ? (
             <UserDesk
               coaches={approvedCoaches}
@@ -663,62 +659,60 @@ export function App() {
               onReview={addReview}
             />
           ) : (
-            <section className="workspace">
-              <div className="panel empty-state">
-                <Users size={42} />
-                <h1>请先微信授权登录</h1>
-                <p>进入微信后确认当前账号，即可预约教练、申请成为教练，或进入管理员后台。</p>
-                {authConfig.configured && (
-                  <a className="primary link-button" href="/api/auth/wechat/start?redirect=/">
-                    <MessageCircle size={18} />
-                    微信授权登录
-                  </a>
-                )}
-              </div>
-            </section>
+            <PortalLoginGate portal={portal} portalPath={portalPath} authConfig={authConfig} />
           ))}
 
-        {role === "coach" && currentUser && (
-          <CoachDesk
-            coach={currentCoach}
-            bookings={store.bookings}
-            reviews={store.reviews}
-            users={store.users}
-            withdrawals={store.withdrawals}
-            currentUser={currentUser}
-            onApply={applyCoach}
-            onUpdateCoach={updateCoach}
-            onAddSlot={addSlot}
-            onUpdateSlot={updateSlot}
-            onRemoveSlot={removeSlot}
-            onWithdraw={requestWithdrawal}
-            onBookingStatus={updateBookingStatus}
-          />
-        )}
+        {portal === "coach" &&
+          (currentUser ? (
+            <CoachDesk
+              coach={currentCoach}
+              bookings={store.bookings}
+              reviews={store.reviews}
+              users={store.users}
+              withdrawals={store.withdrawals}
+              currentUser={currentUser}
+              onApply={applyCoach}
+              onUpdateCoach={updateCoach}
+              onAddSlot={addSlot}
+              onUpdateSlot={updateSlot}
+              onRemoveSlot={removeSlot}
+              onWithdraw={requestWithdrawal}
+              onBookingStatus={updateBookingStatus}
+            />
+          ) : (
+            <PortalLoginGate portal={portal} portalPath={portalPath} authConfig={authConfig} />
+          ))}
 
-        {role === "admin" && currentUser && (
-          <AdminDesk
-            store={store}
-            onUpdateCoach={updateCoach}
-            onDeleteCoach={deleteCoach}
-            onSettings={(settings) =>
-              setStorePatch((draft) => ({
-                ...draft,
-                settings,
-              }))
-            }
-            onPlatformWithdraw={requestPlatformWithdrawal}
-            onConfirmPayment={confirmBookingPaid}
-            onWithdrawal={(id, status) =>
-              setStorePatch((draft) => ({
-                ...draft,
-                withdrawals: draft.withdrawals.map((withdrawal) =>
-                  withdrawal.id === id ? { ...withdrawal, status } : withdrawal,
-                ),
-              }))
-            }
-          />
-        )}
+        {portal === "admin" &&
+          (currentUser ? (
+            canUseAdminDesk ? (
+              <AdminDesk
+                store={store}
+                onUpdateCoach={updateCoach}
+                onDeleteCoach={deleteCoach}
+                onSettings={(settings) =>
+                  setStorePatch((draft) => ({
+                    ...draft,
+                    settings,
+                  }))
+                }
+                onPlatformWithdraw={requestPlatformWithdrawal}
+                onConfirmPayment={confirmBookingPaid}
+                onWithdrawal={(id, status) =>
+                  setStorePatch((draft) => ({
+                    ...draft,
+                    withdrawals: draft.withdrawals.map((withdrawal) =>
+                      withdrawal.id === id ? { ...withdrawal, status } : withdrawal,
+                    ),
+                  }))
+                }
+              />
+            ) : (
+              <AccessDenied />
+            )
+          ) : (
+            <PortalLoginGate portal={portal} portalPath={portalPath} authConfig={authConfig} />
+          ))}
       </div>
 
       {paymentBookingId && (
@@ -741,7 +735,57 @@ export function App() {
   );
 }
 
+function PortalLoginGate({
+  portal,
+  portalPath,
+  authConfig,
+}: {
+  portal: Portal;
+  portalPath: string;
+  authConfig: AuthConfig;
+}) {
+  const meta = portalMeta[portal];
+  const Icon = meta.icon;
+  return (
+    <section className="workspace">
+      <div className="panel empty-state">
+        <Icon size={42} />
+        <h1>{meta.title}</h1>
+        <p>{meta.loginText}</p>
+        {authConfig.configured ? (
+          <a
+            className="primary link-button"
+            href={`/api/auth/wechat/start?redirect=${encodeURIComponent(portalPath)}`}
+          >
+            <MessageCircle size={18} />
+            微信授权登录
+          </a>
+        ) : (
+          <div className="auth-warning">
+            <strong>微信授权未配置</strong>
+            <small>{authConfig.missing.join("、") || "请检查服务端 OAuth 环境变量"}</small>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function AccessDenied() {
+  return (
+    <section className="workspace">
+      <div className="panel empty-state">
+        <ShieldCheck size={42} />
+        <h1>无管理员权限</h1>
+        <p>当前微信账号没有管理员权限。请使用已绑定管理员 openid 的微信账号访问。</p>
+      </div>
+    </section>
+  );
+}
+
 function Header({
+  portal,
+  portalPath,
   currentUser,
   dataMode,
   authConfig,
@@ -749,6 +793,8 @@ function Header({
   onLogin,
   onLogout,
 }: {
+  portal: Portal;
+  portalPath: string;
   currentUser?: User;
   dataMode: "loading" | "api" | "local";
   authConfig: AuthConfig;
@@ -765,9 +811,9 @@ function Header({
       <div>
         <div className="brand">
           <MessageCircle size={24} />
-          <span>教练预约商城 H5</span>
+          <span>{portalMeta[portal].title}</span>
         </div>
-        <p>微信注册、教练预约、支付确认、平台托管与提现管理</p>
+        <p>{portalMeta[portal].description}</p>
       </div>
       <div className="login-cluster">
         <span className={`data-badge ${dataMode}`}>
@@ -793,7 +839,10 @@ function Header({
           )}
         </div>
         {!currentUser && authConfig.configured && (
-          <a className="primary link-button" href="/api/auth/wechat/start?redirect=/">
+          <a
+            className="primary link-button"
+            href={`/api/auth/wechat/start?redirect=${encodeURIComponent(portalPath)}`}
+          >
             <MessageCircle size={18} />
             微信授权登录
           </a>
@@ -893,7 +942,7 @@ function UserDesk({
         <div className="section-title">
           <div>
             <h1>可预约教练</h1>
-            <p>已审核通过的教练会直接显示；点开教练即可查看详情和预约时间。</p>
+            <p>已通过审核并上架的教练会直接显示；点开教练即可查看详情和预约时间。</p>
           </div>
         </div>
         <div className="searchbox">
@@ -908,8 +957,8 @@ function UserDesk({
           {coaches.length === 0 && (
             <div className="inline-empty">
               <Users size={30} />
-              <strong>暂无已审核通过的教练</strong>
-              <small>管理员审核通过教练后，普通用户登录即可在这里直接看到。</small>
+              <strong>暂无已上架教练</strong>
+              <small>管理员审核通过并上架教练后，用户登录即可在这里直接看到。</small>
             </div>
           )}
           {coaches.map((coach) => {
@@ -1091,6 +1140,9 @@ function CoachDesk({
     )
     .reduce((sum, withdrawal) => sum + withdrawal.amount, 0);
   const withdrawable = Math.max(0, completedIncome - paidOut);
+  const listingStatus = getCoachListingStatus(coach);
+  const coachReviews = reviews.filter((review) => review.coachId === coach.id);
+  const isApproved = coach.status === "approved";
 
   return (
     <section className="workspace two-col">
@@ -1098,14 +1150,47 @@ function CoachDesk({
         <div className="section-title">
           <div>
             <h1>教练中心</h1>
-            <p>审核通过后，用户才能看到你的主页并预约。审核中也可以继续修改申请资料。</p>
+            <p>
+              {isApproved
+                ? "你可以维护资料、排期、处理订单、查看评价并申请提现。"
+                : "审核通过前只开放资料维护；被拒绝后可修改资料并重新提交。"}
+            </p>
           </div>
-          <span className={`pill ${coach.status}`}>{coachStatusText[coach.status]}</span>
+          <div className="status-stack">
+            <span className={`pill ${coach.status}`}>{coachStatusText[coach.status]}</span>
+            <span className={`pill ${listingStatus}`}>{coachListingStatusText[listingStatus]}</span>
+          </div>
         </div>
+        {!isApproved && (
+          <div className="notice-box">
+            <strong>{coach.status === "pending" ? "申请正在等待管理员审核" : "申请已被拒绝"}</strong>
+            <p>
+              {coach.status === "pending"
+                ? "你可以继续修改展示资料和可预约时间，管理员审核通过并上架后才会出现在用户端。"
+                : "请根据沟通结果修改资料，再重新提交审核。重新提交后状态会回到待审核。"}
+            </p>
+            {coach.status === "rejected" && (
+              <button
+                className="primary"
+                onClick={() => onUpdateCoach(coach.id, { status: "pending", listingStatus: "unlisted" })}
+              >
+                <Check size={17} />
+                重新提交审核
+              </button>
+            )}
+          </div>
+        )}
+        {isApproved && listingStatus === "unlisted" && (
+          <div className="notice-box">
+            <strong>当前未上架</strong>
+            <p>用户端不会展示你的主页，也不能产生新预约；历史订单和评价仍然保留。</p>
+          </div>
+        )}
         <EditableCoach coach={coach} onUpdate={onUpdateCoach} disabled={false} />
       </div>
 
-      <div className="detail-stack">
+      {isApproved && (
+        <div className="detail-stack">
         <div className="panel">
           <div className="metric-row">
             <Metric icon={<CreditCard size={19} />} label="待确认订单" value={coachBookings.filter((b) => b.status === "paid").length.toString()} />
@@ -1140,7 +1225,13 @@ function CoachDesk({
           <h2>教练待办与订单</h2>
           <CoachBookingTable bookings={coachBookings} coach={coach} users={users} onStatus={onBookingStatus} />
         </div>
+
+        <div className="panel">
+          <h2>用户评价</h2>
+          <ReviewList reviews={coachReviews} users={users} empty="还没有用户评价" />
+        </div>
       </div>
+      )}
     </section>
   );
 }
@@ -1258,45 +1349,62 @@ function AdminDesk({
       <div className="panel admin-span">
         <h2>教练维护与审核</h2>
         <div className="admin-table">
-          {store.coaches.map((coach) => (
-            <div key={coach.id} className="admin-row coach-admin-row">
-              <Avatar label={coach.name} color={avatarForCoach(coach)} />
-              <span>
-                <strong>{coach.name}</strong>
-                <small>{coach.title}</small>
-              </span>
-              <span className={`pill ${coach.status}`}>{coachStatusText[coach.status]}</span>
-              <label>
-                <span>价格</span>
-                <input
-                  type="number"
-                  value={coach.price}
-                  onChange={(event) => onUpdateCoach(coach.id, { price: Number(event.target.value) })}
-                />
-              </label>
-              <div className="review-actions" aria-label={`${coach.name}审核操作`}>
-                <button
-                  className="primary small"
-                  disabled={coach.status === "approved"}
-                  onClick={() => onUpdateCoach(coach.id, { status: "approved" })}
-                >
-                  <Check size={16} />
-                  通过审核
-                </button>
-                <button
-                  className="ghost danger-text small"
-                  disabled={coach.status === "rejected"}
-                  onClick={() => onUpdateCoach(coach.id, { status: "rejected" })}
-                >
-                  <X size={16} />
-                  拒绝
+          {store.coaches.map((coach) => {
+            const listingStatus = getCoachListingStatus(coach);
+            return (
+              <div key={coach.id} className="admin-row coach-admin-row">
+                <Avatar label={coach.name} color={avatarForCoach(coach)} />
+                <span>
+                  <strong>{coach.name}</strong>
+                  <small>{coach.title}</small>
+                </span>
+                <div className="status-stack">
+                  <span className={`pill ${coach.status}`}>{coachStatusText[coach.status]}</span>
+                  <span className={`pill ${listingStatus}`}>{coachListingStatusText[listingStatus]}</span>
+                </div>
+                <label>
+                  <span>价格</span>
+                  <input
+                    type="number"
+                    value={coach.price}
+                    onChange={(event) => onUpdateCoach(coach.id, { price: Number(event.target.value) })}
+                  />
+                </label>
+                <div className="review-actions" aria-label={`${coach.name}审核操作`}>
+                  <button
+                    className="primary small"
+                    disabled={coach.status === "approved"}
+                    onClick={() => onUpdateCoach(coach.id, { status: "approved", listingStatus: "unlisted" })}
+                  >
+                    <Check size={16} />
+                    通过审核
+                  </button>
+                  <button
+                    className="ghost danger-text small"
+                    disabled={coach.status === "rejected"}
+                    onClick={() => onUpdateCoach(coach.id, { status: "rejected", listingStatus: "unlisted" })}
+                  >
+                    <X size={16} />
+                    拒绝
+                  </button>
+                  <button
+                    className="ghost small"
+                    disabled={coach.status !== "approved"}
+                    onClick={() =>
+                      onUpdateCoach(coach.id, {
+                        listingStatus: listingStatus === "listed" ? "unlisted" : "listed",
+                      })
+                    }
+                  >
+                    {listingStatus === "listed" ? "下架" : "上架"}
+                  </button>
+                </div>
+                <button className="icon-danger" onClick={() => onDeleteCoach(coach.id)} aria-label="删除教练">
+                  <Trash2 size={17} />
                 </button>
               </div>
-              <button className="icon-danger" onClick={() => onDeleteCoach(coach.id)} aria-label="删除教练">
-                <Trash2 size={17} />
-              </button>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 

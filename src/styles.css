@@ -204,6 +204,10 @@ textarea:focus {
   padding: 22px;
 }
 
+.shell.single-workspace {
+  grid-template-columns: 1fr;
+}
+
 .rail {
   align-self: start;
   background: #ffffff;
@@ -664,9 +668,46 @@ p {
   color: #906100;
 }
 
+.pill.listed {
+  background: #e7f7ef;
+  color: #087443;
+}
+
+.pill.unlisted {
+  background: #eef4f1;
+  color: #52625c;
+}
+
 .pill.rejected {
   background: #fff1f0;
   color: #b42318;
+}
+
+.status-stack {
+  align-items: flex-start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.notice-box {
+  background: #fff7df;
+  border: 1px solid #f0d58a;
+  border-radius: 8px;
+  color: #704d00;
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding: 12px;
+}
+
+.notice-box p {
+  margin-bottom: 0;
+}
+
+.notice-box .primary {
+  justify-self: start;
 }
 
 .form-grid {
@@ -840,7 +881,7 @@ p {
 }
 
 .coach-admin-row {
-  grid-template-columns: 46px minmax(150px, 1fr) auto 140px minmax(190px, auto) 40px;
+  grid-template-columns: 46px minmax(150px, 1fr) minmax(120px, auto) 140px minmax(260px, auto) 40px;
 }
 
 .admin-order-table {
