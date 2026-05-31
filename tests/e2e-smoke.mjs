@@ -339,12 +339,8 @@ async function main() {
     await page.getByRole("heading", { name: "管理后台" }).waitFor();
     await page.locator(".switch").click();
     await page.getByLabel("抽佣比例").fill("15");
-    await page.getByText("提现审核").waitFor();
-    await page
-      .locator(".admin-row")
-      .filter({ hasText: "测试教练" })
-      .getByRole("button", { name: "通过", exact: true })
-      .click();
+    await page.getByText("资金流与会计口径").waitFor();
+    await page.getByText("平台服务收入", { exact: true }).waitFor();
     const backup = await page.evaluate(async () => {
       const response = await fetch("/api/admin/export");
       return {
@@ -362,12 +358,6 @@ async function main() {
       backup.data.bookings.some((booking) => booking.status === "reviewed"),
       "数据备份应包含当前订单数据",
     );
-    await page.getByRole("button", { name: /提取平台扣点/ }).click();
-    await page
-      .locator(".admin-row")
-      .filter({ hasText: "平台扣点" })
-      .getByRole("button", { name: "通过", exact: true })
-      .click();
     await page
       .locator(".admin-row")
       .filter({ hasText: "测试教练" })
@@ -416,14 +406,8 @@ async function main() {
       "管理员应能审核通过并下架教练",
     );
     assert(
-      state.withdrawals.some((withdrawal) => withdrawal.status === "approved"),
-      "管理员应能审核通过提现",
-    );
-    assert(
-      state.withdrawals.some(
-        (withdrawal) => withdrawal.target === "platform" && withdrawal.status === "approved",
-      ),
-      "管理员应能提取平台扣点",
+      !state.withdrawals.some((withdrawal) => withdrawal.target === "platform"),
+      "平台扣点应作为平台收入展示，不应生成提现单",
     );
     assert(state.settings.commissionEnabled === false, "管理员应能关闭抽佣开关");
     assert(state.settings.commissionRate === 15, "管理员应能调整抽佣比例");

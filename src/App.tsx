@@ -366,7 +366,7 @@ function currentPayoutPeriod(date = new Date()) {
 
 function payoutEtaText(target: "coach" | "platform") {
   return target === "coach"
-    ? "每月结算审核通过后，由管理员线下打款；到账以银行处理为准，通常 1-3 个工作日"
+    ? "微信支付资金通常按自然日 T+1 进入商户结算流程；管理员确认商户到账后线下打款，银行到账通常 1-3 个工作日"
     : "预计 1 个工作日内由管理员审核并发起平台结算";
 }
 
@@ -841,25 +841,6 @@ export function App() {
     }));
   }
 
-  function requestPlatformWithdrawal(amount: number) {
-    if (amount <= 0) return;
-    setStorePatch((draft) => ({
-      ...draft,
-      withdrawals: [
-        {
-          id: makeId("w"),
-          target: "platform",
-          amount,
-          status: "pending",
-          destination: "平台绑定收款账户 / 商户号结算账户",
-          etaText: payoutEtaText("platform"),
-          createdAt: new Date().toLocaleString("zh-CN", { hour12: false }),
-        },
-        ...draft.withdrawals,
-      ],
-    }));
-  }
-
   function deleteCoach(coachId: string) {
     setStorePatch((draft) => ({
       ...draft,
@@ -947,7 +928,6 @@ export function App() {
                     settings,
                   }))
                 }
-                onPlatformWithdraw={requestPlatformWithdrawal}
                 onConfirmPayment={confirmBookingPaid}
                 onWithdrawal={(id, status) =>
                   setStorePatch((draft) => ({
@@ -1547,7 +1527,7 @@ function CoachDesk({
             {payoutReady ? (
               <>
                 <p>{payoutDestination}</p>
-                <small>当前采用每月结算申请，管理员审核通过后线下打款，到账以银行处理为准。</small>
+                <small>当前采用每月结算申请；微信支付资金通常次日进入商户结算流程，管理员确认到账后再线下打款。</small>
               </>
             ) : (
               <>
@@ -1631,7 +1611,6 @@ function AdminDesk({
   onUpdateCoach,
   onDeleteCoach,
   onSettings,
-  onPlatformWithdraw,
   onConfirmPayment,
   onWithdrawal,
 }: {
@@ -1639,23 +1618,33 @@ function AdminDesk({
   onUpdateCoach: (coachId: string, patch: Partial<Coach>) => void;
   onDeleteCoach: (coachId: string) => void;
   onSettings: (settings: Settings) => void;
-  onPlatformWithdraw: (amount: number) => void;
   onConfirmPayment: (bookingId: string) => void;
   onWithdrawal: (id: string, status: WithdrawalStatus) => void;
 }) {
+  const paidStatuses: BookingStatus[] = ["paid", "accepted", "declined", "completed", "reviewed"];
   const gross = store.bookings
-    .filter((booking) => booking.status !== "reserved")
+    .filter((booking) => paidStatuses.includes(booking.status))
     .reduce((sum, booking) => sum + booking.amount, 0);
   const escrow = store.bookings
     .filter((booking) => booking.status === "paid" || booking.status === "accepted")
     .reduce((sum, booking) => sum + booking.amount, 0);
+  const completedAwaitingReview = store.bookings
+    .filter((booking) => booking.status === "completed")
+    .reduce((sum, booking) => sum + booking.amount, 0);
+  const coachAccrued = store.bookings
+    .filter((booking) => booking.status === "reviewed")
+    .reduce((sum, booking) => sum + booking.coachIncome, 0);
+  const coachSettlementPending = store.withdrawals
+    .filter((withdrawal) => (withdrawal.target ?? "coach") === "coach" && withdrawal.status === "pending")
+    .reduce((sum, withdrawal) => sum + withdrawal.amount, 0);
+  const coachSettled = store.withdrawals
+    .filter((withdrawal) => (withdrawal.target ?? "coach") === "coach" && withdrawal.status === "approved")
+    .reduce((sum, withdrawal) => sum + withdrawal.amount, 0);
+  const coachPayable = Math.max(0, coachAccrued - coachSettlementPending - coachSettled);
   const platformFees = store.bookings
     .filter((booking) => booking.status === "reviewed")
     .reduce((sum, booking) => sum + booking.platformFee, 0);
-  const platformPaidOut = store.withdrawals
-    .filter((withdrawal) => withdrawal.target === "platform" && withdrawal.status !== "rejected")
-    .reduce((sum, withdrawal) => sum + withdrawal.amount, 0);
-  const platformWithdrawable = Math.max(0, platformFees - platformPaidOut);
+  const platformCashRetained = Math.max(0, gross - coachSettled);
 
   return (
     <section className="workspace admin-grid">
@@ -1708,14 +1697,41 @@ function AdminDesk({
             }
           />
         </label>
-        <button
-          className="primary full"
-          disabled={platformWithdrawable <= 0}
-          onClick={() => onPlatformWithdraw(platformWithdrawable)}
-        >
-          <HandCoins size={18} />
-          提取平台扣点 {formatMoney(platformWithdrawable)}
-        </button>
+      </div>
+
+      <div className="panel admin-span finance-ledger">
+        <div className="section-title compact">
+          <div>
+            <h2>资金流与会计口径</h2>
+            <p>平台先代收学员全款，服务完成后拆成应付教练款和平台服务收入。</p>
+          </div>
+          <WalletCards size={24} />
+        </div>
+        <div className="ledger-grid">
+          <article>
+            <strong>平台商户到账</strong>
+            <span>{formatMoney(gross)}</span>
+            <small>学员已确认支付的总额，微信支付通常 T+1 结算到平台绑定银行卡。</small>
+            <em>仍在服务中：{formatMoney(escrow)}</em>
+            <em>待学员评价：{formatMoney(completedAwaitingReview)}</em>
+          </article>
+          <article>
+            <strong>应付教练结算</strong>
+            <span>{formatMoney(coachPayable)}</span>
+            <small>已评价订单产生、尚未提交或尚未打款的教练收入。</small>
+            <em>审核中：{formatMoney(coachSettlementPending)}</em>
+            <em>已打款：{formatMoney(coachSettled)}</em>
+          </article>
+          <article>
+            <strong>平台服务收入</strong>
+            <span>{formatMoney(platformFees)}</span>
+            <small>按已评价订单确认的平台扣点收入，不需要再做“提现”动作。</small>
+            <em>平台银行卡留存估算：{formatMoney(platformCashRetained)}</em>
+          </article>
+        </div>
+        <p className="muted ledger-note">
+          会计建议：学员付款入平台账户先记“银行存款/第三方支付资金”与“合同负债或其他应付款”；服务完成并评价后，平台只把扣点确认为收入，教练部分继续作为应付教练款，实际打款时冲减应付。
+        </p>
       </div>
 
       <PaymentSetupPanel />
@@ -1880,6 +1896,13 @@ function PaymentSetupPanel() {
           <span className={`pill ${config.configured ? "approved" : "pending"}`}>
             {config.configured ? "微信支付已配置" : "微信支付未配置"}
           </span>
+          <div className="notice-box settlement-note">
+            <strong>商户到账说明</strong>
+            <p>
+              微信支付按自然日切账，T 日交易通常在 T+1 进入资金账单和商户结算流程；
+              自动提现可能在次日凌晨发起，最终到账时间以银行处理为准。
+            </p>
+          </div>
           {!config.configured && (
             <div className="payment-setup-steps">
               <a

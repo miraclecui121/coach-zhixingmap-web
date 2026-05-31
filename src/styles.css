@@ -879,6 +879,52 @@ p {
   font-size: 21px;
 }
 
+.finance-ledger {
+  align-content: start;
+}
+
+.ledger-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+}
+
+.ledger-grid article {
+  background: #f8faf9;
+  border: 1px solid #e1e8e4;
+  border-radius: 8px;
+  display: grid;
+  gap: 7px;
+  padding: 14px;
+}
+
+.ledger-grid article > strong {
+  color: #16322d;
+}
+
+.ledger-grid article > span {
+  color: #0f766e;
+  font-size: 23px;
+  font-weight: 900;
+}
+
+.ledger-grid small,
+.ledger-grid em,
+.ledger-note {
+  color: #61706a;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.ledger-grid em {
+  font-style: normal;
+  font-weight: 700;
+}
+
+.ledger-note {
+  margin-top: 12px;
+}
+
 .slot-edit-row {
   align-items: center;
   display: grid;
