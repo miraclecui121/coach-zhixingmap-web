@@ -51,7 +51,7 @@ type User = {
 
 type Slot = {
   id: string;
-  weekday: "周三" | "周四";
+  weekday: string;
   date: string;
   time: string;
   enabled: boolean;
@@ -68,6 +68,8 @@ type Coach = {
   background: string;
   specialties: string[];
   slots: Slot[];
+  payoutMethod?: string;
+  payoutAccount?: string;
 };
 
 type Booking = {
@@ -109,6 +111,9 @@ type Withdrawal = {
   amount: number;
   status: WithdrawalStatus;
   createdAt: string;
+  destination?: string;
+  etaText?: string;
+  reviewedAt?: string;
 };
 
 type Settings = {
@@ -133,6 +138,8 @@ type AuthConfig = {
 };
 
 const storageKey = "coach-marketplace-h5-store";
+const reviewMaxLength = 200;
+const weekdayChoices = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 
 const seedStore: Store = {
   users: [
@@ -158,10 +165,10 @@ const statusText: Record<BookingStatus, string> = {
   reserved: "待支付",
   payment_pending: "待平台确认收款",
   paid: "待教练确认",
-  accepted: "教练已接受",
+  accepted: "服务中",
   declined: "教练未接受",
-  completed: "已完成待评价",
-  reviewed: "已评价",
+  completed: "学员待评价",
+  reviewed: "服务结束",
 };
 
 const coachStatusText: Record<CoachStatus, string> = {
@@ -186,6 +193,38 @@ function makeId(prefix: string) {
 
 function formatMoney(value: number) {
   return `¥${value.toFixed(value % 1 === 0 ? 0 : 2)}`;
+}
+
+function weekdayOptions() {
+  return weekdayChoices;
+}
+
+function defaultSlot(): Slot {
+  return {
+    id: makeId("s"),
+    weekday: "周一",
+    date: "2026-05-25",
+    time: "14:00-15:00",
+    enabled: true,
+  };
+}
+
+function formatSlotTime(slot?: Slot) {
+  if (!slot) return "";
+  return `${slot.weekday} ${slot.date} ${slot.time}`;
+}
+
+function coachPayoutSummary(coach?: Coach) {
+  const method = coach?.payoutMethod?.trim();
+  const account = coach?.payoutAccount?.trim();
+  if (!method || !account) return "";
+  return `${method} · ${account}`;
+}
+
+function payoutEtaText(target: "coach" | "platform") {
+  return target === "coach"
+    ? "预计 1 个工作日内由管理员审核并发起打款"
+    : "预计 1 个工作日内由管理员审核并发起平台结算";
 }
 
 function getSlot(coach: Coach | undefined, slotId: string) {
@@ -366,7 +405,18 @@ export function App() {
   }
 
   function applyCoach(
-    application: Pick<Coach, "name" | "title" | "price" | "intro" | "background" | "specialties" | "slots">,
+    application: Pick<
+      Coach,
+      | "name"
+      | "title"
+      | "price"
+      | "intro"
+      | "background"
+      | "specialties"
+      | "slots"
+      | "payoutMethod"
+      | "payoutAccount"
+    >,
     status: CoachStatus = "pending",
   ) {
     if (!currentUser) return;
@@ -393,6 +443,8 @@ export function App() {
           background: application.background,
           specialties: application.specialties,
           slots: application.slots,
+          payoutMethod: application.payoutMethod,
+          payoutAccount: application.payoutAccount,
         },
       ],
     }));
@@ -498,16 +550,7 @@ export function App() {
         coach.id === coachId
           ? {
               ...coach,
-              slots: [
-                ...coach.slots,
-                {
-                  id: makeId("s"),
-                  weekday: "周三",
-                  date: "2026-05-27",
-                  time: "14:00-15:00",
-                  enabled: true,
-                },
-              ],
+              slots: [...coach.slots, defaultSlot()],
             }
           : coach,
       ),
@@ -543,6 +586,9 @@ export function App() {
 
   function requestWithdrawal(coachId: string, amount: number) {
     if (amount <= 0) return;
+    const coach = storeRef.current.coaches.find((item) => item.id === coachId);
+    const destination = coachPayoutSummary(coach);
+    if (!destination) return;
     setStorePatch((draft) => ({
       ...draft,
       withdrawals: [
@@ -553,6 +599,8 @@ export function App() {
           amount,
           status: "pending",
           createdAt: new Date().toLocaleString("zh-CN", { hour12: false }),
+          destination,
+          etaText: payoutEtaText("coach"),
         },
         ...draft.withdrawals,
       ],
@@ -570,6 +618,8 @@ export function App() {
           amount,
           status: "pending",
           createdAt: new Date().toLocaleString("zh-CN", { hour12: false }),
+          destination: "平台结算账户",
+          etaText: payoutEtaText("platform"),
         },
         ...draft.withdrawals,
       ],
@@ -703,7 +753,14 @@ export function App() {
               setStorePatch((draft) => ({
                 ...draft,
                 withdrawals: draft.withdrawals.map((withdrawal) =>
-                  withdrawal.id === id ? { ...withdrawal, status } : withdrawal,
+                  withdrawal.id === id
+                    ? {
+                        ...withdrawal,
+                        status,
+                        reviewedAt:
+                          status === "approved" ? new Date().toISOString() : withdrawal.reviewedAt,
+                      }
+                    : withdrawal,
                 ),
               }))
             }
@@ -1050,7 +1107,18 @@ function CoachDesk({
   users: User[];
   withdrawals: Withdrawal[];
   onApply: (
-    application: Pick<Coach, "name" | "title" | "price" | "intro" | "background" | "specialties" | "slots">,
+    application: Pick<
+      Coach,
+      | "name"
+      | "title"
+      | "price"
+      | "intro"
+      | "background"
+      | "specialties"
+      | "slots"
+      | "payoutMethod"
+      | "payoutAccount"
+    >,
     status?: CoachStatus,
   ) => void;
   onUpdateCoach: (coachId: string, patch: Partial<Coach>) => void;
@@ -1072,6 +1140,8 @@ function CoachDesk({
   const completedIncome = coachBookings
     .filter((booking) => booking.status === "completed" || booking.status === "reviewed")
     .reduce((sum, booking) => sum + booking.coachIncome, 0);
+  const payoutSummary = coachPayoutSummary(coach);
+  const payoutReady = Boolean(payoutSummary);
   const paidOut = withdrawals
     .filter(
       (withdrawal) =>
@@ -1097,30 +1167,46 @@ function CoachDesk({
 
       <div className="detail-stack">
         <div className="panel">
-          <div className="metric-row">
-            <Metric icon={<CreditCard size={19} />} label="待确认订单" value={coachBookings.filter((b) => b.status === "paid").length.toString()} />
-            <Metric icon={<WalletCards size={19} />} label="可提现" value={formatMoney(withdrawable)} />
-            <Metric icon={<Star size={19} />} label="评价数" value={reviews.filter((review) => review.coachId === coach.id).length.toString()} />
-          </div>
-          <button
-            className="primary full"
-            disabled={coach.status !== "approved" || withdrawable <= 0}
-            onClick={() => onWithdraw(coach.id, withdrawable)}
-          >
-            <HandCoins size={18} />
-            申请提现 {formatMoney(withdrawable)}
-          </button>
+        <div className="metric-row">
+          <Metric icon={<CreditCard size={19} />} label="待确认订单" value={coachBookings.filter((b) => b.status === "paid").length.toString()} />
+          <Metric icon={<WalletCards size={19} />} label="可提现" value={formatMoney(withdrawable)} />
+          <Metric icon={<Star size={19} />} label="评价数" value={reviews.filter((review) => review.coachId === coach.id).length.toString()} />
         </div>
+        <div className="payout-notice">
+          <strong>提现资料</strong>
+          {payoutReady ? (
+            <>
+              <p>提现方式：{coach.payoutMethod}</p>
+              <p>收款账号：{coach.payoutAccount}</p>
+              <small>提交后会按这里的真实信息进入提现审核，不再使用尾号占位。</small>
+            </>
+          ) : (
+            <>
+              <p>请先填写提现方式和收款账号，再申请提现。</p>
+              <small>资料会自动保存到你的教练资料里，用于后续提现审核。</small>
+            </>
+          )}
+        </div>
+        <button
+          className="primary full"
+          disabled={coach.status !== "approved" || withdrawable <= 0 || !payoutReady}
+          onClick={() => onWithdraw(coach.id, withdrawable)}
+        >
+          <HandCoins size={18} />
+          申请提现 {formatMoney(withdrawable)}
+        </button>
+        <WithdrawalList withdrawals={withdrawals.filter((item) => item.target === "coach" && item.coachId === coach.id)} />
+      </div>
 
-        <div className="panel">
-          <div className="section-title compact">
-            <div>
-              <h2>可预约时间</h2>
-              <p>当前 MVP 限定周三或周四下午，由教练自己维护。</p>
-            </div>
-            <button className="ghost" onClick={() => onAddSlot(coach.id)}>
-              <Plus size={17} />
-              添加
+      <div className="panel">
+        <div className="section-title compact">
+          <div>
+            <h2>可预约时间</h2>
+            <p>教练可自行维护每个可预约时段，支持按日期和星期灵活调整。</p>
+          </div>
+          <button className="ghost" onClick={() => onAddSlot(coach.id)}>
+            <Plus size={17} />
+            添加
             </button>
           </div>
           <SlotEditor coach={coach} onUpdate={onUpdateSlot} onRemove={onRemoveSlot} disabled={false} />
@@ -1225,6 +1311,7 @@ function AdminDesk({
           <HandCoins size={18} />
           提取平台扣点 {formatMoney(platformWithdrawable)}
         </button>
+        <p className="muted payout-hint">平台提现后会进入管理员审核，预计 1 个工作日内处理并发起结算。</p>
       </div>
 
       <div className="panel">
@@ -1311,6 +1398,9 @@ function AdminDesk({
                 <span>
                   <strong>{isPlatform ? "平台扣点" : coach?.name ?? "未知教练"}</strong>
                   <small>{withdrawal.createdAt}</small>
+                  <small>{withdrawal.destination || (isPlatform ? "平台结算账户" : "未填写收款账号")}</small>
+                  <small>{withdrawal.etaText || payoutEtaText(isPlatform ? "platform" : "coach")}</small>
+                  {withdrawal.reviewedAt && <small>审核时间：{withdrawal.reviewedAt}</small>}
                 </span>
                 <strong>{formatMoney(withdrawal.amount)}</strong>
                 <span className={`pill ${withdrawal.status}`}>{withdrawal.status}</span>
@@ -1337,12 +1427,34 @@ function CoachApplicationForm({
 }: {
   currentUser: User;
   onSubmit: (
-    application: Pick<Coach, "name" | "title" | "price" | "intro" | "background" | "specialties" | "slots">,
+    application: Pick<
+      Coach,
+      | "name"
+      | "title"
+      | "price"
+      | "intro"
+      | "background"
+      | "specialties"
+      | "slots"
+      | "payoutMethod"
+      | "payoutAccount"
+    >,
     status?: CoachStatus,
   ) => void;
 }) {
   const [draft, setDraft] = useState<
-    Pick<Coach, "name" | "title" | "price" | "intro" | "background" | "specialties" | "slots">
+    Pick<
+      Coach,
+      | "name"
+      | "title"
+      | "price"
+      | "intro"
+      | "background"
+      | "specialties"
+      | "slots"
+      | "payoutMethod"
+      | "payoutAccount"
+    >
   >({
     name: currentUser.nickname || currentUser.name,
     title: "",
@@ -1350,15 +1462,9 @@ function CoachApplicationForm({
     intro: "",
     background: "",
     specialties: [],
-    slots: [
-      {
-        id: makeId("s"),
-        weekday: "周三",
-        date: "2026-05-27",
-        time: "14:00-15:00",
-        enabled: true,
-      },
-    ],
+    payoutMethod: "",
+    payoutAccount: "",
+    slots: [defaultSlot()],
   });
   const specialtyText = draft.specialties.join("，");
   const canSubmit =
@@ -1443,28 +1549,35 @@ function CoachApplicationForm({
             placeholder="职业规划，面试辅导，管理沟通"
           />
         </label>
+        <label className="field">
+          <span>提现方式</span>
+          <input
+            value={draft.payoutMethod ?? ""}
+            onChange={(event) => setDraft({ ...draft, payoutMethod: event.target.value })}
+            placeholder="微信 / 银行卡 / 支付宝"
+          />
+        </label>
+        <label className="field">
+          <span>收款账号</span>
+          <input
+            value={draft.payoutAccount ?? ""}
+            onChange={(event) => setDraft({ ...draft, payoutAccount: event.target.value })}
+            placeholder="真实收款账号或银行卡号"
+          />
+        </label>
       </div>
 
       <div className="section-title compact application-slots-title">
         <div>
           <h2>可预约时间</h2>
-          <p>至少开放一个周三或周四下午的对话时间。</p>
+          <p>至少开放一个可预约时间，支持按日期和星期灵活维护。</p>
         </div>
         <button
           className="ghost"
           onClick={() =>
             setDraft({
               ...draft,
-              slots: [
-                ...draft.slots,
-                {
-                  id: makeId("s"),
-                  weekday: "周三",
-                  date: "2026-05-27",
-                  time: "14:00-15:00",
-                  enabled: true,
-                },
-              ],
+              slots: [...draft.slots, defaultSlot()],
             })
           }
         >
@@ -1479,8 +1592,11 @@ function CoachApplicationForm({
               value={slot.weekday}
               onChange={(event) => updateSlotDraft(slot.id, { weekday: event.target.value as Slot["weekday"] })}
             >
-              <option value="周三">周三</option>
-              <option value="周四">周四</option>
+              {weekdayOptions().map((weekday) => (
+                <option key={weekday} value={weekday}>
+                  {weekday}
+                </option>
+              ))}
             </select>
             <input
               type="date"
@@ -1523,6 +1639,8 @@ function CoachApplicationForm({
             background: draft.background.trim(),
             specialties: draft.specialties.length ? draft.specialties : ["综合教练"],
             slots: draft.slots.map((slot) => ({ ...slot, time: slot.time.trim() })),
+            payoutMethod: draft.payoutMethod?.trim(),
+            payoutAccount: draft.payoutAccount?.trim(),
           })
         }
       >
@@ -1579,6 +1697,45 @@ function EditableCoach({
           }
         />
       </label>
+      <label className="field">
+        <span>提现方式</span>
+        <input
+          value={coach.payoutMethod ?? ""}
+          disabled={disabled}
+          onChange={(event) => onUpdate(coach.id, { payoutMethod: event.target.value })}
+          placeholder="微信 / 银行卡 / 支付宝"
+        />
+      </label>
+      <label className="field">
+        <span>收款账号</span>
+        <input
+          value={coach.payoutAccount ?? ""}
+          disabled={disabled}
+          onChange={(event) => onUpdate(coach.id, { payoutAccount: event.target.value })}
+          placeholder="真实收款账号或银行卡号"
+        />
+      </label>
+      <p className="muted full-field payout-note">这两项会直接保存到教练资料里，用于提现审核，不再使用尾号占位。</p>
+    </div>
+  );
+}
+
+function WithdrawalList({ withdrawals }: { withdrawals: Withdrawal[] }) {
+  if (withdrawals.length === 0) return <p className="muted payout-history">暂无提现记录</p>;
+  return (
+    <div className="withdrawal-list">
+      {withdrawals.map((withdrawal) => (
+        <article key={withdrawal.id} className="withdrawal-item">
+          <div>
+            <strong>{formatMoney(withdrawal.amount)}</strong>
+            <span className={`pill ${withdrawal.status}`}>{withdrawal.status}</span>
+          </div>
+          <p>{withdrawal.destination || "未填写收款账号"}</p>
+          <small>{withdrawal.etaText || payoutEtaText((withdrawal.target ?? "coach") as "coach" | "platform")}</small>
+          <small>申请时间：{withdrawal.createdAt}</small>
+          {withdrawal.reviewedAt && <small>审核时间：{withdrawal.reviewedAt}</small>}
+        </article>
+      ))}
     </div>
   );
 }
@@ -1604,8 +1761,11 @@ function SlotEditor({
             disabled={disabled}
             onChange={(event) => onUpdate(coach.id, slot.id, { weekday: event.target.value as Slot["weekday"] })}
           >
-            <option value="周三">周三</option>
-            <option value="周四">周四</option>
+            {weekdayOptions().map((weekday) => (
+              <option key={weekday} value={weekday}>
+                {weekday}
+              </option>
+            ))}
           </select>
           <input
             type="date"
@@ -1664,6 +1824,7 @@ function BookingList({
       {bookings.map((booking) => {
         const coach = coaches.find((item) => item.id === booking.coachId);
         const slot = getSlot(coach, booking.slotId);
+        const slotLabel = formatSlotTime(slot) || "时间已删除";
         const rating = ratingDraft[booking.id] ?? 5;
         const content = reviewDraft[booking.id] ?? "";
         const note = noteDraft[booking.id] ?? booking.note ?? "";
@@ -1671,15 +1832,21 @@ function BookingList({
           <article key={booking.id} className="booking-card">
             <div>
               <strong>{coach?.name}</strong>
-              <span>{slot ? `${slot.weekday} ${slot.date} ${slot.time}` : "时间已删除"}</span>
+              <span>{slotLabel}</span>
               <small>
-                {statusText[booking.status]} · 托管金额 {formatMoney(booking.amount)}
+                {statusText[booking.status]} · 金额 {formatMoney(booking.amount)}
               </small>
               {booking.status === "payment_pending" && (
                 <em className="todo-label">待办：平台确认收款后，教练会收到确认提醒</em>
               )}
               {booking.status === "paid" && <em className="todo-label">待办：等待教练接受</em>}
-              {booking.status === "accepted" && <em className="todo-label">待办：按约定时间完成对话</em>}
+              {booking.status === "accepted" && (
+                <div className="service-reminder">
+                  <strong>服务中提醒</strong>
+                  <p>预约时间：{slotLabel}</p>
+                  <small>请在这个时间段完成对话，结束后教练确认完成，你再提交评价。</small>
+                </div>
+              )}
               {booking.status === "declined" && <em className="todo-label rejected">教练未接受，请联系平台处理退款或重约</em>}
             </div>
             <div className="booking-actions">
@@ -1712,11 +1879,15 @@ function BookingList({
                     </option>
                   ))}
                 </select>
-                <input
+                <textarea
                   value={content}
+                  maxLength={reviewMaxLength}
                   onChange={(event) => setReviewDraft({ ...reviewDraft, [booking.id]: event.target.value })}
-                  placeholder={`${currentUser.name}，写下这次对话的反馈`}
+                  placeholder={`${currentUser.name}，写下这次对话的反馈，最多 ${reviewMaxLength} 字`}
                 />
+                <small className="char-count">
+                  {content.length}/{reviewMaxLength}
+                </small>
                 <button className="primary small" disabled={!content.trim()} onClick={() => onReview(booking.id, rating, content.trim())}>
                   <MessageSquareText size={16} />
                   提交评价
@@ -1764,7 +1935,8 @@ function CoachBookingTable({
             <span>
               <strong>{user?.name ?? "未知用户"}</strong>
               {booking.status === "paid" && <small className="new-order">新预约待接受</small>}
-              {booking.status === "accepted" && <small className="new-order">已接受，待完成</small>}
+              {booking.status === "accepted" && <small className="new-order">服务中</small>}
+              {booking.status === "completed" && <small className="new-order">待评价</small>}
               {booking.note && <small>留言：{booking.note}</small>}
             </span>
             <small>{slot ? `${slot.date} ${slot.time}` : "时间已删除"}</small>

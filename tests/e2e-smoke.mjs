@@ -194,19 +194,20 @@ async function main() {
     await login("coach-openid");
     await page.locator(".current-account").filter({ hasText: "测试教练" }).waitFor();
     await clickText(page, "教练中心");
+    await page.getByLabel("展示名称").fill("测试教练");
     await page.getByText(`留言：${noteText}`).waitFor();
     await page.getByRole("button", { name: "接受", exact: true }).click();
-    await page.getByText("教练已接受").waitFor();
+    await page.locator(".new-order").filter({ hasText: "服务中" }).waitFor();
     await page.getByRole("button", { name: "确认完成" }).click();
-    await page.getByText("已完成待评价").waitFor();
+    await page.getByText("学员待评价").waitFor();
 
     await clickText(page, "退出");
     await login("user-openid");
     await page.locator(".current-account").filter({ hasText: "测试用户" }).waitFor();
-    await page.getByText("已完成待评价").waitFor();
+    await page.getByText("学员待评价").waitFor();
     const reviewContent = "教练很具体，预约体验顺畅。";
     const reviewBox = page.locator(".review-box").first();
-    await reviewBox.locator("input").fill(reviewContent);
+    await reviewBox.locator("textarea").fill(reviewContent);
     await reviewBox.getByRole("button", { name: "提交评价" }).click();
     await page.getByText("教练很具体，预约体验顺畅。").waitFor();
 
@@ -214,13 +215,32 @@ async function main() {
     await login("coach-openid");
     await page.locator(".current-account").filter({ hasText: "测试教练" }).waitFor();
     await clickText(page, "教练中心");
+    await page.getByLabel("提现方式").fill("微信");
+    await page.getByLabel("收款账号").fill("coach-real-pay-account");
+    await page.waitForFunction(() => {
+      return fetch("/api/store")
+        .then((response) => response.json())
+        .then((state) =>
+          state.coaches.some(
+            (coach) =>
+              coach.name === "测试教练" &&
+              coach.payoutMethod === "微信" &&
+              coach.payoutAccount === "coach-real-pay-account",
+          ),
+        );
+    });
     assert(await page.getByText("申请提现").isEnabled(), "完成订单后教练应可申请提现");
     await page.getByText("申请提现").click();
     await page.waitForFunction(() => {
       return fetch("/api/store")
         .then((response) => response.json())
         .then((state) =>
-          state.withdrawals.some((withdrawal) => withdrawal.status === "pending"),
+          state.withdrawals.some(
+            (withdrawal) =>
+              withdrawal.status === "pending" &&
+              withdrawal.destination &&
+              withdrawal.etaText,
+          ),
         );
     });
 

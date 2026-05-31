@@ -587,7 +587,7 @@ p {
   display: grid;
   gap: 8px;
   grid-column: 1 / -1;
-  grid-template-columns: 96px minmax(0, 1fr) auto;
+  grid-template-columns: 96px minmax(0, 1fr) auto auto;
 }
 
 .note-box {
@@ -599,6 +599,63 @@ p {
 
 .note-box textarea {
   min-height: 74px;
+}
+
+.char-count {
+  align-self: center;
+  color: #6d7b76;
+  font-size: 12px;
+  justify-self: end;
+}
+
+.service-reminder,
+.payout-notice,
+.withdrawal-item {
+  background: #f3f8f6;
+  border: 1px solid #d8e6e0;
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+}
+
+.service-reminder strong,
+.payout-notice strong,
+.withdrawal-item strong {
+  color: #16322d;
+}
+
+.service-reminder p,
+.payout-notice p,
+.withdrawal-item p {
+  margin: 0;
+}
+
+.service-reminder small,
+.payout-notice small,
+.withdrawal-item small {
+  color: #5d6c66;
+}
+
+.payout-hint,
+.payout-note {
+  margin: 2px 0 0;
+}
+
+.withdrawal-list {
+  display: grid;
+  gap: 10px;
+}
+
+.withdrawal-item div {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.withdrawal-item .pill {
+  margin-left: auto;
 }
 
 .review-list article {
@@ -1105,6 +1162,10 @@ p {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     width: 100%;
+  }
+
+  .char-count {
+    justify-self: start;
   }
 
   .form-grid,
