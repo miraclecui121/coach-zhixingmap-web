@@ -1138,7 +1138,7 @@ function CoachDesk({
 
   const coachBookings = bookings.filter((booking) => booking.coachId === coach.id);
   const completedIncome = coachBookings
-    .filter((booking) => booking.status === "completed" || booking.status === "reviewed")
+    .filter((booking) => booking.status === "reviewed")
     .reduce((sum, booking) => sum + booking.coachIncome, 0);
   const payoutSummary = coachPayoutSummary(coach);
   const payoutReady = Boolean(payoutSummary);
@@ -1245,7 +1245,7 @@ function AdminDesk({
     .filter((booking) => booking.status === "paid" || booking.status === "accepted")
     .reduce((sum, booking) => sum + booking.amount, 0);
   const platformFees = store.bookings
-    .filter((booking) => booking.status === "completed" || booking.status === "reviewed")
+    .filter((booking) => booking.status === "reviewed")
     .reduce((sum, booking) => sum + booking.platformFee, 0);
   const platformPaidOut = store.withdrawals
     .filter((withdrawal) => withdrawal.target === "platform" && withdrawal.status !== "rejected")

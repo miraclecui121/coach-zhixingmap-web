@@ -149,10 +149,16 @@ function getCompletedIncome(store, coachId) {
   return store.bookings
     .filter(
       (booking) =>
-        booking.coachId === coachId &&
-        (booking.status === "completed" || booking.status === "reviewed"),
+        booking.coachId === coachId && booking.status === "reviewed",
     )
     .reduce((sum, booking) => sum + Number(booking.coachIncome || 0), 0);
+}
+
+function coachPayoutDestination(coach) {
+  const method = String(coach?.payoutMethod || "").trim();
+  const account = String(coach?.payoutAccount || "").trim();
+  if (!method || !account) return "";
+  return `${method} · ${account}`;
 }
 
 function getPaidOut(store, coachId) {
@@ -335,6 +341,7 @@ function isAllowedCoachWithdrawal(currentStore, nextStore, user) {
     return false;
   }
   const withdrawal = withdrawalDiff.added[0];
+  const destination = coachPayoutDestination(currentCoach);
   const withdrawable = Math.max(
     0,
     getCompletedIncome(currentStore, currentCoach.id) - getPaidOut(currentStore, currentCoach.id),
@@ -343,6 +350,10 @@ function isAllowedCoachWithdrawal(currentStore, nextStore, user) {
     withdrawal.target === "coach" &&
       withdrawal.coachId === currentCoach.id &&
       withdrawal.status === "pending" &&
+      currentCoach.status === "approved" &&
+      destination &&
+      withdrawal.destination === destination &&
+      withdrawal.etaText === "预计 1 个工作日内由管理员审核并发起打款" &&
       withdrawal.amount > 0 &&
       withdrawal.amount <= withdrawable,
   );
