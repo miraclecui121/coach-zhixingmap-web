@@ -16,12 +16,36 @@ async function readJson(path, options) {
   return { response, body };
 }
 
+async function readText(path) {
+  const response = await fetch(`${appUrl}${path}`);
+  return { response, body: await response.text() };
+}
+
 const health = await readJson("/api/health");
 assert(health.response.ok && health.body.ok === true, "线上健康检查失败");
+
+for (const portal of ["/user", "/coach", "/admin"]) {
+  const result = await readText(portal);
+  assert(result.response.ok, `${portal} 入口不可访问`);
+  assert(result.body.includes('<div id="root"></div>'), `${portal} 未返回前端应用`);
+}
 
 const paymentConfig = await readJson("/api/payment-config");
 assert(paymentConfig.response.ok, "支付配置接口不可用");
 assert(paymentConfig.body.allowMock === false, "线上不应开启测试支付");
+assert(
+  paymentConfig.body.merchantPortalUrl === "https://pay.weixin.qq.com/",
+  "微信支付网页登录入口未上线",
+);
+assert(
+  paymentConfig.body.suggestedNotifyUrl === `${appUrl}/api/payments/wechat/notify`,
+  "微信支付推荐回调地址异常",
+);
+assert(
+  Array.isArray(paymentConfig.body.requiredEnv) &&
+    paymentConfig.body.requiredEnv.includes("WECHAT_PAY_MCH_ID"),
+  "微信支付配置清单未上线",
+);
 
 const storeResult = await readJson("/api/store");
 assert(storeResult.response.ok, "线上 store 接口不可用");
@@ -48,14 +72,25 @@ assert(
   "管理员备份接口未上线或未正确保护",
 );
 
+const bookingCreateResult = await readJson("/api/bookings", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ coachId: "__missing__", slotId: "__missing__" }),
+});
+assert(
+  bookingCreateResult.response.status === 401 &&
+    bookingCreateResult.body.error === "LOGIN_REQUIRED",
+  "预约创建接口未上线或未正确保护",
+);
+
 const manualResult = await readJson("/api/payments/manual-confirmation", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({ bookingId: "__readiness_missing_booking__" }),
 });
 assert(
-  manualResult.response.status === 404 && manualResult.body.error === "BOOKING_NOT_FOUND",
-  "人工收款确认接口未上线或行为异常",
+  manualResult.response.status === 401 && manualResult.body.error === "LOGIN_REQUIRED",
+  "人工收款确认接口未上线或未正确保护",
 );
 
 console.log(
@@ -67,6 +102,11 @@ console.log(
       users: store.users.length,
       coaches: store.coaches.length,
       approvedCoaches: store.coaches.filter((coach) => coach.status === "approved").length,
+      listedCoaches: store.coaches.filter(
+        (coach) =>
+          coach.status === "approved" &&
+          (coach.listingStatus ?? "listed") === "listed",
+      ).length,
       bookings: store.bookings.length,
       badBookings: badBookings.length,
       manualConfirmationReady: true,

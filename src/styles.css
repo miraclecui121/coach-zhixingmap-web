@@ -204,6 +204,10 @@ textarea:focus {
   padding: 22px;
 }
 
+.shell.single-workspace {
+  grid-template-columns: 1fr;
+}
+
 .rail {
   align-self: start;
   background: #ffffff;
@@ -516,9 +520,48 @@ p {
   padding: 14px;
 }
 
+.highlight-card {
+  background: #fffdf2 !important;
+  border-color: #e0b94f !important;
+  box-shadow: 0 0 0 3px rgba(224, 185, 79, 0.16);
+}
+
 .booking-card > div:first-child {
   display: grid;
   gap: 4px;
+}
+
+.task-panel {
+  background: #fffdf2;
+  border-color: #e0b94f;
+}
+
+.inline-task-panel {
+  border: 1px solid #e0b94f;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.task-list {
+  display: grid;
+  gap: 8px;
+}
+
+.task-item {
+  background: #ffffff;
+  border: 1px solid #e9dfb7;
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+}
+
+.task-item.urgent {
+  border-left: 4px solid #b77900;
+}
+
+.task-item strong {
+  color: #704d00;
 }
 
 .booking-actions {
@@ -534,6 +577,48 @@ p {
 
 .todo-label.rejected {
   color: #b42318;
+}
+
+.service-reminder {
+  background: #eaf7f3;
+  border: 1px solid #a9ddc3;
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 9px 10px;
+}
+
+.service-reminder strong {
+  color: #0f766e;
+}
+
+.payout-notice {
+  margin: 12px 0;
+}
+
+.payout-history {
+  margin: 12px 0 0;
+}
+
+.withdrawal-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.withdrawal-item {
+  background: #f8faf9;
+  border: 1px solid #e1e8e4;
+  border-radius: 8px;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 10px 12px;
+}
+
+.withdrawal-item > small {
+  grid-column: 1 / -1;
 }
 
 .primary,
@@ -587,7 +672,12 @@ p {
   display: grid;
   gap: 8px;
   grid-column: 1 / -1;
-  grid-template-columns: 96px minmax(0, 1fr) auto auto;
+  grid-template-columns: 96px minmax(0, 1fr) 58px auto;
+}
+
+.char-count {
+  align-self: center;
+  text-align: right;
 }
 
 .note-box {
@@ -599,63 +689,6 @@ p {
 
 .note-box textarea {
   min-height: 74px;
-}
-
-.char-count {
-  align-self: center;
-  color: #6d7b76;
-  font-size: 12px;
-  justify-self: end;
-}
-
-.service-reminder,
-.payout-notice,
-.withdrawal-item {
-  background: #f3f8f6;
-  border: 1px solid #d8e6e0;
-  border-radius: 8px;
-  display: grid;
-  gap: 4px;
-  padding: 10px 12px;
-}
-
-.service-reminder strong,
-.payout-notice strong,
-.withdrawal-item strong {
-  color: #16322d;
-}
-
-.service-reminder p,
-.payout-notice p,
-.withdrawal-item p {
-  margin: 0;
-}
-
-.service-reminder small,
-.payout-notice small,
-.withdrawal-item small {
-  color: #5d6c66;
-}
-
-.payout-hint,
-.payout-note {
-  margin: 2px 0 0;
-}
-
-.withdrawal-list {
-  display: grid;
-  gap: 10px;
-}
-
-.withdrawal-item div {
-  align-items: center;
-  display: flex;
-  gap: 8px;
-  justify-content: space-between;
-}
-
-.withdrawal-item .pill {
-  margin-left: auto;
 }
 
 .review-list article {
@@ -721,9 +754,46 @@ p {
   color: #906100;
 }
 
+.pill.listed {
+  background: #e7f7ef;
+  color: #087443;
+}
+
+.pill.unlisted {
+  background: #eef4f1;
+  color: #52625c;
+}
+
 .pill.rejected {
   background: #fff1f0;
   color: #b42318;
+}
+
+.status-stack {
+  align-items: flex-start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.notice-box {
+  background: #fff7df;
+  border: 1px solid #f0d58a;
+  border-radius: 8px;
+  color: #704d00;
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+  padding: 12px;
+}
+
+.notice-box p {
+  margin-bottom: 0;
+}
+
+.notice-box .primary {
+  justify-self: start;
 }
 
 .form-grid {
@@ -897,7 +967,7 @@ p {
 }
 
 .coach-admin-row {
-  grid-template-columns: 46px minmax(150px, 1fr) auto 140px minmax(190px, auto) 40px;
+  grid-template-columns: 46px minmax(150px, 1fr) minmax(120px, auto) 140px minmax(260px, auto) 40px;
 }
 
 .admin-order-table {
@@ -1013,6 +1083,45 @@ p {
 
 .payment-success p {
   margin-bottom: 0;
+}
+
+.payment-setup-panel {
+  align-content: start;
+}
+
+.payment-setup-steps {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.payment-setup-steps ol {
+  color: #52625c;
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding-left: 20px;
+}
+
+.env-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.env-list code {
+  background: #eef4f1;
+  border: 1px solid #d5dfda;
+  border-radius: 6px;
+  color: #274d45;
+  font-size: 12px;
+  padding: 6px 8px;
+}
+
+.env-list code.missing-env {
+  background: #fff7df;
+  border-color: #f0d58a;
+  color: #704d00;
 }
 
 .payment-warning p {
@@ -1162,10 +1271,6 @@ p {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     width: 100%;
-  }
-
-  .char-count {
-    justify-self: start;
   }
 
   .form-grid,

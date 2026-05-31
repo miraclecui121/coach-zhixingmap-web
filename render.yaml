@@ -18,6 +18,8 @@ services:
         sync: false
       - key: WECHAT_OAUTH_SCOPE
         value: snsapi_userinfo
+      - key: SESSION_SECRET
+        sync: false
       - key: ADMIN_OPENID
         sync: false
       - key: BOOTSTRAP_FIRST_WECHAT_ADMIN

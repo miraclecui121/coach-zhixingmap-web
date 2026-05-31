@@ -6,6 +6,7 @@ import {
   CreditCard,
   Edit3,
   Eye,
+  ExternalLink,
   HandCoins,
   LayoutDashboard,
   MessageSquareText,
@@ -23,8 +24,9 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-type Role = "user" | "coach" | "admin";
+type Portal = "user" | "coach" | "admin";
 type CoachStatus = "pending" | "approved" | "rejected";
+type CoachListingStatus = "listed" | "unlisted";
 type BookingStatus =
   | "reserved"
   | "payment_pending"
@@ -32,7 +34,8 @@ type BookingStatus =
   | "accepted"
   | "declined"
   | "completed"
-  | "reviewed";
+  | "reviewed"
+  | "cancelled";
 type WithdrawalStatus = "pending" | "approved" | "rejected";
 
 type User = {
@@ -63,13 +66,14 @@ type Coach = {
   name: string;
   title: string;
   status: CoachStatus;
+  listingStatus?: CoachListingStatus;
   price: number;
   intro: string;
   background: string;
-  specialties: string[];
-  slots: Slot[];
   payoutMethod?: string;
   payoutAccount?: string;
+  specialties: string[];
+  slots: Slot[];
 };
 
 type Booking = {
@@ -84,10 +88,11 @@ type Booking = {
   note?: string;
   createdAt: string;
   payment?: {
-    provider: "wechat_native" | "manual_confirmation";
+    provider: "wechat_native" | "wechat_jsapi" | "manual_confirmation";
     state: "pending" | "paid";
     outTradeNo: string;
     codeUrl?: string;
+    prepayId?: string;
     createdAt: string;
     paidAt?: string;
     transactionId?: string;
@@ -110,10 +115,10 @@ type Withdrawal = {
   coachId?: string;
   amount: number;
   status: WithdrawalStatus;
-  createdAt: string;
   destination?: string;
   etaText?: string;
   reviewedAt?: string;
+  createdAt: string;
 };
 
 type Settings = {
@@ -137,9 +142,17 @@ type AuthConfig = {
   allowDevLogin: boolean;
 };
 
+type PaymentConfig = {
+  configured: boolean;
+  missing: string[];
+  allowMock: boolean;
+  suggestedNotifyUrl: string;
+  merchantPortalUrl: string;
+  requiredEnv: string[];
+};
+
 const storageKey = "coach-marketplace-h5-store";
 const reviewMaxLength = 200;
-const weekdayChoices = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 
 const seedStore: Store = {
   users: [
@@ -169,6 +182,7 @@ const statusText: Record<BookingStatus, string> = {
   declined: "教练未接受",
   completed: "学员待评价",
   reviewed: "服务结束",
+  cancelled: "已取消",
 };
 
 const coachStatusText: Record<CoachStatus, string> = {
@@ -176,6 +190,176 @@ const coachStatusText: Record<CoachStatus, string> = {
   approved: "已通过",
   rejected: "已拒绝",
 };
+
+const coachListingStatusText: Record<CoachListingStatus, string> = {
+  listed: "已上架",
+  unlisted: "未上架",
+};
+
+const portalMeta: Record<Portal, { title: string; description: string; loginText: string; icon: typeof Users }> = {
+  user: {
+    title: "用户预约入口",
+    description: "只显示教练列表、预约支付、订单待办、评价打分。",
+    loginText: "登录后可以预约教练、支付订单并完成评价。",
+    icon: Users,
+  },
+  coach: {
+    title: "教练工作台",
+    description: "只显示教练申请、资料排期、订单处理、评价查看、提现。",
+    loginText: "登录后可以申请成为教练，或进入已通过审核的教练工作台。",
+    icon: UserRoundCheck,
+  },
+  admin: {
+    title: "管理员后台",
+    description: "只显示教练审核、上下架、分佣、订单、提现与数据备份。",
+    loginText: "登录后会校验管理员权限，非管理员不会展示后台功能。",
+    icon: ShieldCheck,
+  },
+};
+
+function getPortalFromPath(pathname = window.location.pathname): Portal {
+  const first = pathname.split("/").filter(Boolean)[0];
+  if (first === "coach" || first === "admin") return first;
+  return "user";
+}
+
+function getPortalPath(portal: Portal) {
+  return `/${portal}`;
+}
+
+function getCoachListingStatus(coach: Coach): CoachListingStatus {
+  return coach.listingStatus ?? (coach.status === "approved" ? "listed" : "unlisted");
+}
+
+function isListedCoach(coach: Coach) {
+  return coach.status === "approved" && getCoachListingStatus(coach) === "listed";
+}
+
+function isSlotOccupiedStatus(status: BookingStatus) {
+  return status !== "declined" && status !== "cancelled";
+}
+
+function getApiErrorMessage(body: unknown, fallback: string) {
+  if (!body || typeof body !== "object") return fallback;
+  const payload = body as {
+    error?: string;
+    message?: string;
+    detail?: { code?: string; message?: string };
+  };
+  return payload.detail?.message || payload.message || payload.detail?.code || payload.error || fallback;
+}
+
+function isWechatBrowser() {
+  return /MicroMessenger/i.test(window.navigator.userAgent);
+}
+
+function isStudentActionStatus(status: BookingStatus) {
+  return (
+    status === "reserved" ||
+    status === "payment_pending" ||
+    status === "accepted" ||
+    status === "completed"
+  );
+}
+
+function isCoachActionStatus(status: BookingStatus) {
+  return status === "paid" || status === "accepted";
+}
+
+function userBookingMessage(status: BookingStatus) {
+  const messages: Record<BookingStatus, string> = {
+    reserved: "待办：请完成支付，支付后教练会收到确认提醒",
+    payment_pending: "待办：平台确认收款后，教练会收到确认提醒",
+    paid: "消息：支付成功，已通知教练确认预约",
+    accepted: "消息：教练已确认，当前进入服务中",
+    declined: "消息：教练未接受，请联系平台处理退款或重约",
+    completed: "待办：教练已确认完成，请评价打分后结束服务",
+    reviewed: "消息：服务已结束，感谢你的评价",
+    cancelled: "消息：预约已取消",
+  };
+  return messages[status];
+}
+
+function coachBookingMessage(status: BookingStatus) {
+  const messages: Record<BookingStatus, string> = {
+    reserved: "消息：学员已预约，等待支付",
+    payment_pending: "消息：学员已提交付款确认，等待平台确认收款",
+    paid: "待办：新预约待确认，请接受或拒绝",
+    accepted: "待办：服务中，完成后请确认服务完成",
+    declined: "消息：你已拒绝该预约",
+    completed: "消息：已通知学员评价，评价完成后金额进入可提现",
+    reviewed: "消息：服务已结束，收入已计入可提现",
+    cancelled: "消息：预约已取消",
+  };
+  return messages[status];
+}
+
+function weekdayOptions() {
+  return ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
+}
+
+function defaultSlot(): Slot {
+  return {
+    id: makeId("s"),
+    weekday: "周三",
+    date: "2026-05-27",
+    time: "14:00-15:00",
+    enabled: true,
+  };
+}
+
+function formatSlotTime(slot: Slot | undefined) {
+  return slot ? `${slot.weekday} ${slot.date} ${slot.time}` : "时间已删除";
+}
+
+function coachPayoutDestination(coach: Coach | undefined) {
+  const method = coach?.payoutMethod?.trim();
+  const account = coach?.payoutAccount?.trim();
+  if (!method || !account) return "";
+  return `${method} · ${account}`;
+}
+
+function payoutEtaText(target: "coach" | "platform") {
+  return target === "coach"
+    ? "预计 1 个工作日内由管理员审核并发起打款"
+    : "预计 1 个工作日内由管理员审核并发起平台结算";
+}
+
+function invokeWechatPay(payParams: Record<string, string>) {
+  return new Promise<string>((resolve, reject) => {
+    const start = () => {
+      const bridge = (
+        window as Window & {
+          WeixinJSBridge?: {
+            invoke: (
+              name: string,
+              params: Record<string, string>,
+              callback: (result: { err_msg?: string }) => void,
+            ) => void;
+          };
+        }
+      ).WeixinJSBridge;
+      if (!bridge) {
+        reject(new Error("微信支付控件未就绪，请刷新后重试"));
+        return;
+      }
+      bridge.invoke("getBrandWCPayRequest", payParams, (result) => {
+        const message = result.err_msg || "";
+        if (message.includes(":ok")) {
+          resolve(message);
+          return;
+        }
+        reject(new Error(message.includes(":cancel") ? "用户已取消支付" : message || "微信支付未完成"));
+      });
+    };
+
+    if ((window as Window & { WeixinJSBridge?: unknown }).WeixinJSBridge) {
+      start();
+      return;
+    }
+    document.addEventListener("WeixinJSBridgeReady", start, { once: true });
+  });
+}
 
 function loadStore(): Store {
   const cached = window.localStorage.getItem(storageKey);
@@ -195,38 +379,6 @@ function formatMoney(value: number) {
   return `¥${value.toFixed(value % 1 === 0 ? 0 : 2)}`;
 }
 
-function weekdayOptions() {
-  return weekdayChoices;
-}
-
-function defaultSlot(): Slot {
-  return {
-    id: makeId("s"),
-    weekday: "周一",
-    date: "2026-05-25",
-    time: "14:00-15:00",
-    enabled: true,
-  };
-}
-
-function formatSlotTime(slot?: Slot) {
-  if (!slot) return "";
-  return `${slot.weekday} ${slot.date} ${slot.time}`;
-}
-
-function coachPayoutSummary(coach?: Coach) {
-  const method = coach?.payoutMethod?.trim();
-  const account = coach?.payoutAccount?.trim();
-  if (!method || !account) return "";
-  return `${method} · ${account}`;
-}
-
-function payoutEtaText(target: "coach" | "platform") {
-  return target === "coach"
-    ? "预计 1 个工作日内由管理员审核并发起打款"
-    : "预计 1 个工作日内由管理员审核并发起平台结算";
-}
-
 function getSlot(coach: Coach | undefined, slotId: string) {
   return coach?.slots.find((slot) => slot.id === slotId);
 }
@@ -243,10 +395,20 @@ export function App() {
     allowDevLogin: false,
   });
   const [sessionUser, setSessionUser] = useState<User | undefined>();
-  const [role, setRole] = useState<Role>("user");
+  const [portal, setPortal] = useState<Portal>(() => getPortalFromPath());
   const [selectedCoachId, setSelectedCoachId] = useState("c1");
   const [paymentBookingId, setPaymentBookingId] = useState<string | null>(null);
+  const [bookingError, setBookingError] = useState("");
   const [query, setQuery] = useState("");
+
+  useEffect(() => {
+    if (window.location.pathname === "/") {
+      window.history.replaceState(null, "", getPortalPath("user"));
+    }
+    const syncPortal = () => setPortal(getPortalFromPath());
+    window.addEventListener("popstate", syncPortal);
+    return () => window.removeEventListener("popstate", syncPortal);
+  }, []);
 
   useEffect(() => {
     let ignore = false;
@@ -302,7 +464,7 @@ export function App() {
     () =>
       store.coaches.filter(
         (coach) =>
-          coach.status === "approved" &&
+          isListedCoach(coach) &&
           [coach.name, coach.title, coach.intro, coach.specialties.join(" ")]
             .join(" ")
             .toLowerCase()
@@ -314,21 +476,28 @@ export function App() {
     approvedCoaches.find((coach) => coach.id === selectedCoachId) ??
     approvedCoaches[0];
 
-  function persistStore(nextStore: Store) {
+  async function persistStore(nextStore: Store) {
     window.localStorage.setItem(storageKey, JSON.stringify(nextStore));
-    if (dataMode !== "api") return;
-    fetch("/api/store", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(nextStore),
-    }).catch(() => setDataMode("local"));
+    if (dataMode !== "api") return true;
+    try {
+      const response = await fetch("/api/store", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(nextStore),
+      });
+      if (!response.ok) return false;
+      return true;
+    } catch {
+      setDataMode("local");
+      return false;
+    }
   }
 
   const setStorePatch = (updater: (draft: Store) => Store) => {
     const nextStore = updater(storeRef.current);
     storeRef.current = nextStore;
     setStore(nextStore);
-    persistStore(nextStore);
+    return persistStore(nextStore);
   };
 
   async function refreshAuthState() {
@@ -355,7 +524,6 @@ export function App() {
     });
     if (!response.ok) return;
     await refreshAuthState();
-    setRole("user");
   }
 
   async function registerUser(name: string, phone: string) {
@@ -364,7 +532,6 @@ export function App() {
     );
     if (existing) {
       await devLogin(phone, existing.name);
-      setRole("user");
       return;
     }
     await devLogin(phone, name);
@@ -373,36 +540,8 @@ export function App() {
   const currentCoach = currentUser
     ? store.coaches.find((coach) => coach.userId === currentUser.id)
     : undefined;
-  const canUseCoachDesk = Boolean(currentCoach);
   const canUseAdminDesk = Boolean(currentUser?.isAdmin);
-  const userTodoCount = currentUser
-    ? store.bookings.filter(
-        (booking) =>
-          booking.userId === currentUser.id &&
-          (booking.status === "reserved" ||
-            booking.status === "payment_pending" ||
-            booking.status === "paid" ||
-            booking.status === "accepted" ||
-            booking.status === "completed"),
-      ).length
-    : 0;
-  const coachTodoCount = currentCoach
-    ? store.bookings.filter(
-        (booking) =>
-          booking.coachId === currentCoach.id &&
-          (booking.status === "paid" || booking.status === "accepted"),
-      ).length
-    : 0;
-  const adminTodoCount = canUseAdminDesk
-    ? store.coaches.filter((coach) => coach.status === "pending").length +
-      store.withdrawals.filter((withdrawal) => withdrawal.status === "pending").length
-    : 0;
-
-  function switchRole(nextRole: Role) {
-    if (nextRole === "coach" && !currentUser) return;
-    if (nextRole === "admin" && !canUseAdminDesk) return;
-    setRole(nextRole);
-  }
+  const portalPath = getPortalPath(portal);
 
   function applyCoach(
     application: Pick<
@@ -421,7 +560,6 @@ export function App() {
   ) {
     if (!currentUser) return;
     if (store.coaches.some((coach) => coach.userId === currentUser.id)) {
-      setRole("coach");
       return;
     }
     const coachId = makeId("c");
@@ -438,6 +576,7 @@ export function App() {
           name: application.name,
           title: application.title,
           status,
+          listingStatus: "unlisted",
           price: application.price,
           intro: application.intro,
           background: application.background,
@@ -448,11 +587,35 @@ export function App() {
         },
       ],
     }));
-    setRole("coach");
   }
 
-  function bookSlot(coach: Coach, slot: Slot) {
-    if (!currentUser) return;
+  async function bookSlot(coach: Coach, slot: Slot) {
+    if (!currentUser || !isListedCoach(coach)) return;
+    setBookingError("");
+    if (dataMode === "api") {
+      try {
+        const response = await fetch("/api/bookings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ coachId: coach.id, slotId: slot.id }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          setBookingError(getApiErrorMessage(payload, "预约保存失败，请刷新后重新选择时间。"));
+          return;
+        }
+        const nextStore = payload.store as Store;
+        storeRef.current = nextStore;
+        setStore(nextStore);
+        window.localStorage.setItem(storageKey, JSON.stringify(nextStore));
+        setPaymentBookingId(String(payload.bookingId));
+        return;
+      } catch {
+        setBookingError("预约保存失败，请检查网络后重新选择时间。");
+        return;
+      }
+    }
+
     const amount = coach.price;
     const platformFee = store.settings.commissionEnabled
       ? amount * (store.settings.commissionRate / 100)
@@ -468,8 +631,19 @@ export function App() {
       status: "reserved",
       createdAt: new Date().toLocaleString("zh-CN", { hour12: false }),
     };
-    setStorePatch((draft) => ({ ...draft, bookings: [booking, ...draft.bookings] }));
-    setPaymentBookingId(booking.id);
+    const saved = await setStorePatch((draft) => ({ ...draft, bookings: [booking, ...draft.bookings] }));
+    if (saved) {
+      setPaymentBookingId(booking.id);
+      return;
+    }
+    const rolledBackStore = {
+      ...storeRef.current,
+      bookings: storeRef.current.bookings.filter((item) => item.id !== booking.id),
+    };
+    storeRef.current = rolledBackStore;
+    setStore(rolledBackStore);
+    window.localStorage.setItem(storageKey, JSON.stringify(rolledBackStore));
+    setBookingError("预约保存失败，请刷新后重新选择时间。");
   }
 
   function payBooking(id: string) {
@@ -550,7 +724,12 @@ export function App() {
         coach.id === coachId
           ? {
               ...coach,
-              slots: [...coach.slots, defaultSlot()],
+              slots: [
+                ...coach.slots,
+                {
+                  ...defaultSlot(),
+                },
+              ],
             }
           : coach,
       ),
@@ -587,7 +766,7 @@ export function App() {
   function requestWithdrawal(coachId: string, amount: number) {
     if (amount <= 0) return;
     const coach = storeRef.current.coaches.find((item) => item.id === coachId);
-    const destination = coachPayoutSummary(coach);
+    const destination = coachPayoutDestination(coach);
     if (!destination) return;
     setStorePatch((draft) => ({
       ...draft,
@@ -598,9 +777,9 @@ export function App() {
           coachId,
           amount,
           status: "pending",
-          createdAt: new Date().toLocaleString("zh-CN", { hour12: false }),
-          destination,
+          destination: coachPayoutDestination(coach),
           etaText: payoutEtaText("coach"),
+          createdAt: new Date().toLocaleString("zh-CN", { hour12: false }),
         },
         ...draft.withdrawals,
       ],
@@ -617,9 +796,9 @@ export function App() {
           target: "platform",
           amount,
           status: "pending",
-          createdAt: new Date().toLocaleString("zh-CN", { hour12: false }),
-          destination: "平台结算账户",
+          destination: "平台绑定收款账户 / 商户号结算账户",
           etaText: payoutEtaText("platform"),
+          createdAt: new Date().toLocaleString("zh-CN", { hour12: false }),
         },
         ...draft.withdrawals,
       ],
@@ -642,6 +821,8 @@ export function App() {
   return (
     <main>
       <Header
+        portal={portal}
+        portalPath={portalPath}
         currentUser={currentUser}
         dataMode={dataMode}
         authConfig={authConfig}
@@ -650,41 +831,11 @@ export function App() {
         onLogout={async () => {
           await fetch("/api/auth/logout", { method: "POST" }).catch(() => undefined);
           setSessionUser(undefined);
-          setRole("user");
         }}
       />
 
-      <div className="shell">
-        <aside className="rail">
-          <button
-            className={role === "user" ? "active" : ""}
-            onClick={() => switchRole("user")}
-          >
-            <Users size={18} />
-            <span>用户商城</span>
-            {userTodoCount > 0 && <em className="nav-badge">{userTodoCount}</em>}
-          </button>
-          <button
-            className={role === "coach" ? "active" : ""}
-            disabled={!currentUser}
-            onClick={() => switchRole("coach")}
-          >
-            <UserRoundCheck size={18} />
-            <span>教练中心</span>
-            {coachTodoCount > 0 && <em className="nav-badge">{coachTodoCount}</em>}
-          </button>
-          <button
-            className={role === "admin" ? "active" : ""}
-            disabled={!currentUser || !canUseAdminDesk}
-            onClick={() => switchRole("admin")}
-          >
-            <ShieldCheck size={18} />
-            <span>管理后台</span>
-            {adminTodoCount > 0 && <em className="nav-badge">{adminTodoCount}</em>}
-          </button>
-        </aside>
-
-        {role === "user" &&
+      <div className="shell single-workspace">
+        {portal === "user" &&
           (currentUser ? (
             <UserDesk
               coaches={approvedCoaches}
@@ -694,6 +845,7 @@ export function App() {
               users={store.users}
               currentUser={currentUser}
               selectedCoach={selectedCoach}
+              bookingError={bookingError}
               query={query}
               onQuery={setQuery}
               onSelectCoach={setSelectedCoachId}
@@ -703,69 +855,66 @@ export function App() {
               onReview={addReview}
             />
           ) : (
-            <section className="workspace">
-              <div className="panel empty-state">
-                <Users size={42} />
-                <h1>请先微信授权登录</h1>
-                <p>进入微信后确认当前账号，即可预约教练、申请成为教练，或进入管理员后台。</p>
-                {authConfig.configured && (
-                  <a className="primary link-button" href="/api/auth/wechat/start?redirect=/">
-                    <MessageCircle size={18} />
-                    微信授权登录
-                  </a>
-                )}
-              </div>
-            </section>
+            <PortalLoginGate portal={portal} portalPath={portalPath} authConfig={authConfig} />
           ))}
 
-        {role === "coach" && currentUser && (
-          <CoachDesk
-            coach={currentCoach}
-            bookings={store.bookings}
-            reviews={store.reviews}
-            users={store.users}
-            withdrawals={store.withdrawals}
-            currentUser={currentUser}
-            onApply={applyCoach}
-            onUpdateCoach={updateCoach}
-            onAddSlot={addSlot}
-            onUpdateSlot={updateSlot}
-            onRemoveSlot={removeSlot}
-            onWithdraw={requestWithdrawal}
-            onBookingStatus={updateBookingStatus}
-          />
-        )}
+        {portal === "coach" &&
+          (currentUser ? (
+            <CoachDesk
+              coach={currentCoach}
+              bookings={store.bookings}
+              reviews={store.reviews}
+              users={store.users}
+              withdrawals={store.withdrawals}
+              currentUser={currentUser}
+              onApply={applyCoach}
+              onUpdateCoach={updateCoach}
+              onAddSlot={addSlot}
+              onUpdateSlot={updateSlot}
+              onRemoveSlot={removeSlot}
+              onWithdraw={requestWithdrawal}
+              onBookingStatus={updateBookingStatus}
+            />
+          ) : (
+            <PortalLoginGate portal={portal} portalPath={portalPath} authConfig={authConfig} />
+          ))}
 
-        {role === "admin" && currentUser && (
-          <AdminDesk
-            store={store}
-            onUpdateCoach={updateCoach}
-            onDeleteCoach={deleteCoach}
-            onSettings={(settings) =>
-              setStorePatch((draft) => ({
-                ...draft,
-                settings,
-              }))
-            }
-            onPlatformWithdraw={requestPlatformWithdrawal}
-            onConfirmPayment={confirmBookingPaid}
-            onWithdrawal={(id, status) =>
-              setStorePatch((draft) => ({
-                ...draft,
-                withdrawals: draft.withdrawals.map((withdrawal) =>
-                  withdrawal.id === id
-                    ? {
-                        ...withdrawal,
-                        status,
-                        reviewedAt:
-                          status === "approved" ? new Date().toISOString() : withdrawal.reviewedAt,
-                      }
-                    : withdrawal,
-                ),
-              }))
-            }
-          />
-        )}
+        {portal === "admin" &&
+          (currentUser ? (
+            canUseAdminDesk ? (
+              <AdminDesk
+                store={store}
+                onUpdateCoach={updateCoach}
+                onDeleteCoach={deleteCoach}
+                onSettings={(settings) =>
+                  setStorePatch((draft) => ({
+                    ...draft,
+                    settings,
+                  }))
+                }
+                onPlatformWithdraw={requestPlatformWithdrawal}
+                onConfirmPayment={confirmBookingPaid}
+                onWithdrawal={(id, status) =>
+                  setStorePatch((draft) => ({
+                    ...draft,
+                    withdrawals: draft.withdrawals.map((withdrawal) =>
+                      withdrawal.id === id
+                        ? {
+                            ...withdrawal,
+                            status,
+                            reviewedAt: new Date().toLocaleString("zh-CN", { hour12: false }),
+                          }
+                        : withdrawal,
+                    ),
+                  }))
+                }
+              />
+            ) : (
+              <AccessDenied />
+            )
+          ) : (
+            <PortalLoginGate portal={portal} portalPath={portalPath} authConfig={authConfig} />
+          ))}
       </div>
 
       {paymentBookingId && (
@@ -781,6 +930,7 @@ export function App() {
           onStoreReplace={(nextStore) => {
             storeRef.current = nextStore;
             setStore(nextStore);
+            window.localStorage.setItem(storageKey, JSON.stringify(nextStore));
           }}
         />
       )}
@@ -788,7 +938,57 @@ export function App() {
   );
 }
 
+function PortalLoginGate({
+  portal,
+  portalPath,
+  authConfig,
+}: {
+  portal: Portal;
+  portalPath: string;
+  authConfig: AuthConfig;
+}) {
+  const meta = portalMeta[portal];
+  const Icon = meta.icon;
+  return (
+    <section className="workspace">
+      <div className="panel empty-state">
+        <Icon size={42} />
+        <h1>{meta.title}</h1>
+        <p>{meta.loginText}</p>
+        {authConfig.configured ? (
+          <a
+            className="primary link-button"
+            href={`/api/auth/wechat/start?redirect=${encodeURIComponent(portalPath)}`}
+          >
+            <MessageCircle size={18} />
+            微信授权登录
+          </a>
+        ) : (
+          <div className="auth-warning">
+            <strong>微信授权未配置</strong>
+            <small>{authConfig.missing.join("、") || "请检查服务端 OAuth 环境变量"}</small>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function AccessDenied() {
+  return (
+    <section className="workspace">
+      <div className="panel empty-state">
+        <ShieldCheck size={42} />
+        <h1>无管理员权限</h1>
+        <p>当前微信账号没有管理员权限。请使用已绑定管理员 openid 的微信账号访问。</p>
+      </div>
+    </section>
+  );
+}
+
 function Header({
+  portal,
+  portalPath,
   currentUser,
   dataMode,
   authConfig,
@@ -796,6 +996,8 @@ function Header({
   onLogin,
   onLogout,
 }: {
+  portal: Portal;
+  portalPath: string;
   currentUser?: User;
   dataMode: "loading" | "api" | "local";
   authConfig: AuthConfig;
@@ -812,9 +1014,9 @@ function Header({
       <div>
         <div className="brand">
           <MessageCircle size={24} />
-          <span>教练预约商城 H5</span>
+          <span>{portalMeta[portal].title}</span>
         </div>
-        <p>微信注册、教练预约、支付确认、平台托管与提现管理</p>
+        <p>{portalMeta[portal].description}</p>
       </div>
       <div className="login-cluster">
         <span className={`data-badge ${dataMode}`}>
@@ -840,7 +1042,10 @@ function Header({
           )}
         </div>
         {!currentUser && authConfig.configured && (
-          <a className="primary link-button" href="/api/auth/wechat/start?redirect=/">
+          <a
+            className="primary link-button"
+            href={`/api/auth/wechat/start?redirect=${encodeURIComponent(portalPath)}`}
+          >
             <MessageCircle size={18} />
             微信授权登录
           </a>
@@ -900,6 +1105,7 @@ function UserDesk({
   users,
   currentUser,
   selectedCoach,
+  bookingError,
   query,
   onQuery,
   onSelectCoach,
@@ -915,6 +1121,7 @@ function UserDesk({
   users: User[];
   currentUser: User;
   selectedCoach?: Coach;
+  bookingError: string;
   query: string;
   onQuery: (value: string) => void;
   onSelectCoach: (id: string) => void;
@@ -940,7 +1147,7 @@ function UserDesk({
         <div className="section-title">
           <div>
             <h1>可预约教练</h1>
-            <p>已审核通过的教练会直接显示；点开教练即可查看详情和预约时间。</p>
+            <p>已通过审核并上架的教练会直接显示；点开教练即可查看详情和预约时间。</p>
           </div>
         </div>
         <div className="searchbox">
@@ -955,8 +1162,8 @@ function UserDesk({
           {coaches.length === 0 && (
             <div className="inline-empty">
               <Users size={30} />
-              <strong>暂无已审核通过的教练</strong>
-              <small>管理员审核通过教练后，普通用户登录即可在这里直接看到。</small>
+              <strong>暂无已上架教练</strong>
+              <small>管理员审核通过并上架教练后，用户登录即可在这里直接看到。</small>
             </div>
           )}
           {coaches.map((coach) => {
@@ -1020,7 +1227,7 @@ function UserDesk({
                     (booking) =>
                       booking.coachId === selectedCoach.id &&
                       booking.slotId === slot.id &&
-                      booking.status !== "declined",
+                      isSlotOccupiedStatus(booking.status),
                   );
                   return (
                     <button
@@ -1068,6 +1275,7 @@ function UserDesk({
             onNote={onNote}
             onReview={onReview}
           />
+          {bookingError && <p className="error-text">{bookingError}</p>}
         </div>
       </div>
       {confirmSlot && (
@@ -1107,18 +1315,7 @@ function CoachDesk({
   users: User[];
   withdrawals: Withdrawal[];
   onApply: (
-    application: Pick<
-      Coach,
-      | "name"
-      | "title"
-      | "price"
-      | "intro"
-      | "background"
-      | "specialties"
-      | "slots"
-      | "payoutMethod"
-      | "payoutAccount"
-    >,
+    application: Pick<Coach, "name" | "title" | "price" | "intro" | "background" | "specialties" | "slots">,
     status?: CoachStatus,
   ) => void;
   onUpdateCoach: (coachId: string, patch: Partial<Coach>) => void;
@@ -1140,8 +1337,6 @@ function CoachDesk({
   const completedIncome = coachBookings
     .filter((booking) => booking.status === "reviewed")
     .reduce((sum, booking) => sum + booking.coachIncome, 0);
-  const payoutSummary = coachPayoutSummary(coach);
-  const payoutReady = Boolean(payoutSummary);
   const paidOut = withdrawals
     .filter(
       (withdrawal) =>
@@ -1151,6 +1346,13 @@ function CoachDesk({
     )
     .reduce((sum, withdrawal) => sum + withdrawal.amount, 0);
   const withdrawable = Math.max(0, completedIncome - paidOut);
+  const payoutDestination = coachPayoutDestination(coach);
+  const payoutReady = Boolean(payoutDestination);
+  const listingStatus = getCoachListingStatus(coach);
+  const coachReviews = reviews.filter((review) => review.coachId === coach.id);
+  const isApproved = coach.status === "approved";
+  const coachActionBookings = coachBookings.filter((booking) => isCoachActionStatus(booking.status));
+  const waitingForStudentBookings = coachBookings.filter((booking) => booking.status === "completed");
 
   return (
     <section className="workspace two-col">
@@ -1158,55 +1360,122 @@ function CoachDesk({
         <div className="section-title">
           <div>
             <h1>教练中心</h1>
-            <p>审核通过后，用户才能看到你的主页并预约。审核中也可以继续修改申请资料。</p>
+            <p>
+              {isApproved
+                ? "你可以维护资料、排期、处理订单、查看评价并申请提现。"
+                : "审核通过前只开放资料维护；被拒绝后可修改资料并重新提交。"}
+            </p>
           </div>
-          <span className={`pill ${coach.status}`}>{coachStatusText[coach.status]}</span>
+          <div className="status-stack">
+            <span className={`pill ${coach.status}`}>{coachStatusText[coach.status]}</span>
+            <span className={`pill ${listingStatus}`}>{coachListingStatusText[listingStatus]}</span>
+          </div>
         </div>
+        {!isApproved && (
+          <div className="notice-box">
+            <strong>{coach.status === "pending" ? "申请正在等待管理员审核" : "申请已被拒绝"}</strong>
+            <p>
+              {coach.status === "pending"
+                ? "你可以继续修改展示资料和可预约时间，管理员审核通过并上架后才会出现在用户端。"
+                : "请根据沟通结果修改资料，再重新提交审核。重新提交后状态会回到待审核。"}
+            </p>
+            {coach.status === "rejected" && (
+              <button
+                className="primary"
+                onClick={() => onUpdateCoach(coach.id, { status: "pending", listingStatus: "unlisted" })}
+              >
+                <Check size={17} />
+                重新提交审核
+              </button>
+            )}
+          </div>
+        )}
+        {isApproved && listingStatus === "unlisted" && (
+          <div className="notice-box">
+            <strong>当前未上架</strong>
+            <p>用户端不会展示你的主页，也不能产生新预约；历史订单和评价仍然保留。</p>
+          </div>
+        )}
         <EditableCoach coach={coach} onUpdate={onUpdateCoach} disabled={false} />
       </div>
 
-      <div className="detail-stack">
+      {isApproved && (
+        <div className="detail-stack">
         <div className="panel">
-        <div className="metric-row">
-          <Metric icon={<CreditCard size={19} />} label="待确认订单" value={coachBookings.filter((b) => b.status === "paid").length.toString()} />
-          <Metric icon={<WalletCards size={19} />} label="可提现" value={formatMoney(withdrawable)} />
-          <Metric icon={<Star size={19} />} label="评价数" value={reviews.filter((review) => review.coachId === coach.id).length.toString()} />
-        </div>
-        <div className="payout-notice">
-          <strong>提现资料</strong>
-          {payoutReady ? (
-            <>
-              <p>提现方式：{coach.payoutMethod}</p>
-              <p>收款账号：{coach.payoutAccount}</p>
-              <small>提交后会按这里的真实信息进入提现审核，不再使用尾号占位。</small>
-            </>
-          ) : (
-            <>
-              <p>请先填写提现方式和收款账号，再申请提现。</p>
-              <small>资料会自动保存到你的教练资料里，用于后续提现审核。</small>
-            </>
-          )}
-        </div>
-        <button
-          className="primary full"
-          disabled={coach.status !== "approved" || withdrawable <= 0 || !payoutReady}
-          onClick={() => onWithdraw(coach.id, withdrawable)}
-        >
-          <HandCoins size={18} />
-          申请提现 {formatMoney(withdrawable)}
-        </button>
-        <WithdrawalList withdrawals={withdrawals.filter((item) => item.target === "coach" && item.coachId === coach.id)} />
-      </div>
-
-      <div className="panel">
-        <div className="section-title compact">
-          <div>
-            <h2>可预约时间</h2>
-            <p>教练可自行维护每个可预约时段，支持按日期和星期灵活调整。</p>
+          <div className="metric-row">
+            <Metric icon={<CreditCard size={19} />} label="待确认订单" value={coachBookings.filter((b) => b.status === "paid").length.toString()} />
+            <Metric icon={<WalletCards size={19} />} label="可提现" value={formatMoney(withdrawable)} />
+            <Metric icon={<Star size={19} />} label="评价数" value={reviews.filter((review) => review.coachId === coach.id).length.toString()} />
           </div>
-          <button className="ghost" onClick={() => onAddSlot(coach.id)}>
-            <Plus size={17} />
-            添加
+          <div className="notice-box payout-notice">
+            <strong>提现去向</strong>
+            {payoutReady ? (
+              <>
+                <p>{payoutDestination}</p>
+                <small>提交提现后进入管理员审核，审核通过后按上方收款信息线下打款。</small>
+              </>
+            ) : (
+              <>
+                <p>请先填写提现方式和收款账号。</p>
+                <small>这两项会保存到教练资料里，用于提现审核。</small>
+              </>
+            )}
+          </div>
+          <button
+            className="primary full"
+            disabled={coach.status !== "approved" || withdrawable <= 0 || !payoutReady}
+            onClick={() => onWithdraw(coach.id, withdrawable)}
+          >
+            <HandCoins size={18} />
+            申请提现 {formatMoney(withdrawable)}
+          </button>
+          <WithdrawalList withdrawals={withdrawals} coach={coach} />
+        </div>
+
+        {(coachActionBookings.length > 0 || waitingForStudentBookings.length > 0) && (
+          <div className="panel task-panel">
+            <div className="section-title compact">
+              <div>
+                <h2>教练待办</h2>
+                <p>需要你处理的预约会优先显示在这里。</p>
+              </div>
+              <ClipboardList size={22} />
+            </div>
+            <div className="task-list">
+              {coachActionBookings.map((booking) => {
+                const user = users.find((item) => item.id === booking.userId);
+                const slot = getSlot(coach, booking.slotId);
+                return (
+                  <div key={booking.id} className="task-item urgent">
+                    <strong>{coachBookingMessage(booking.status)}</strong>
+                    <small>
+                      {user?.name ?? "未知用户"} · {slot ? `${slot.date} ${slot.time}` : "时间已删除"}
+                    </small>
+                  </div>
+                );
+              })}
+              {waitingForStudentBookings.map((booking) => {
+                const user = users.find((item) => item.id === booking.userId);
+                return (
+                  <div key={booking.id} className="task-item">
+                    <strong>{coachBookingMessage(booking.status)}</strong>
+                    <small>{user?.name ?? "未知用户"} 正在完成评价，评价后金额进入可提现。</small>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        <div className="panel">
+          <div className="section-title compact">
+            <div>
+              <h2>可预约时间</h2>
+              <p>教练可自定义开放日期、星期和时间段；关闭后用户端不可预约。</p>
+            </div>
+            <button className="ghost" onClick={() => onAddSlot(coach.id)}>
+              <Plus size={17} />
+              添加
             </button>
           </div>
           <SlotEditor coach={coach} onUpdate={onUpdateSlot} onRemove={onRemoveSlot} disabled={false} />
@@ -1216,7 +1485,13 @@ function CoachDesk({
           <h2>教练待办与订单</h2>
           <CoachBookingTable bookings={coachBookings} coach={coach} users={users} onStatus={onBookingStatus} />
         </div>
+
+        <div className="panel">
+          <h2>用户评价</h2>
+          <ReviewList reviews={coachReviews} users={users} empty="还没有用户评价" />
+        </div>
       </div>
+      )}
     </section>
   );
 }
@@ -1311,8 +1586,9 @@ function AdminDesk({
           <HandCoins size={18} />
           提取平台扣点 {formatMoney(platformWithdrawable)}
         </button>
-        <p className="muted payout-hint">平台提现后会进入管理员审核，预计 1 个工作日内处理并发起结算。</p>
       </div>
+
+      <PaymentSetupPanel />
 
       <div className="panel">
         <h2>用户注册</h2>
@@ -1333,45 +1609,62 @@ function AdminDesk({
       <div className="panel admin-span">
         <h2>教练维护与审核</h2>
         <div className="admin-table">
-          {store.coaches.map((coach) => (
-            <div key={coach.id} className="admin-row coach-admin-row">
-              <Avatar label={coach.name} color={avatarForCoach(coach)} />
-              <span>
-                <strong>{coach.name}</strong>
-                <small>{coach.title}</small>
-              </span>
-              <span className={`pill ${coach.status}`}>{coachStatusText[coach.status]}</span>
-              <label>
-                <span>价格</span>
-                <input
-                  type="number"
-                  value={coach.price}
-                  onChange={(event) => onUpdateCoach(coach.id, { price: Number(event.target.value) })}
-                />
-              </label>
-              <div className="review-actions" aria-label={`${coach.name}审核操作`}>
-                <button
-                  className="primary small"
-                  disabled={coach.status === "approved"}
-                  onClick={() => onUpdateCoach(coach.id, { status: "approved" })}
-                >
-                  <Check size={16} />
-                  通过审核
-                </button>
-                <button
-                  className="ghost danger-text small"
-                  disabled={coach.status === "rejected"}
-                  onClick={() => onUpdateCoach(coach.id, { status: "rejected" })}
-                >
-                  <X size={16} />
-                  拒绝
+          {store.coaches.map((coach) => {
+            const listingStatus = getCoachListingStatus(coach);
+            return (
+              <div key={coach.id} className="admin-row coach-admin-row">
+                <Avatar label={coach.name} color={avatarForCoach(coach)} />
+                <span>
+                  <strong>{coach.name}</strong>
+                  <small>{coach.title}</small>
+                </span>
+                <div className="status-stack">
+                  <span className={`pill ${coach.status}`}>{coachStatusText[coach.status]}</span>
+                  <span className={`pill ${listingStatus}`}>{coachListingStatusText[listingStatus]}</span>
+                </div>
+                <label>
+                  <span>价格</span>
+                  <input
+                    type="number"
+                    value={coach.price}
+                    onChange={(event) => onUpdateCoach(coach.id, { price: Number(event.target.value) })}
+                  />
+                </label>
+                <div className="review-actions" aria-label={`${coach.name}审核操作`}>
+                  <button
+                    className="primary small"
+                    disabled={coach.status === "approved"}
+                    onClick={() => onUpdateCoach(coach.id, { status: "approved", listingStatus: "unlisted" })}
+                  >
+                    <Check size={16} />
+                    通过审核
+                  </button>
+                  <button
+                    className="ghost danger-text small"
+                    disabled={coach.status === "rejected"}
+                    onClick={() => onUpdateCoach(coach.id, { status: "rejected", listingStatus: "unlisted" })}
+                  >
+                    <X size={16} />
+                    拒绝
+                  </button>
+                  <button
+                    className="ghost small"
+                    disabled={coach.status !== "approved"}
+                    onClick={() =>
+                      onUpdateCoach(coach.id, {
+                        listingStatus: listingStatus === "listed" ? "unlisted" : "listed",
+                      })
+                    }
+                  >
+                    {listingStatus === "listed" ? "下架" : "上架"}
+                  </button>
+                </div>
+                <button className="icon-danger" onClick={() => onDeleteCoach(coach.id)} aria-label="删除教练">
+                  <Trash2 size={17} />
                 </button>
               </div>
-              <button className="icon-danger" onClick={() => onDeleteCoach(coach.id)} aria-label="删除教练">
-                <Trash2 size={17} />
-              </button>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 
@@ -1398,9 +1691,18 @@ function AdminDesk({
                 <span>
                   <strong>{isPlatform ? "平台扣点" : coach?.name ?? "未知教练"}</strong>
                   <small>{withdrawal.createdAt}</small>
-                  <small>{withdrawal.destination || (isPlatform ? "平台结算账户" : "未填写收款账号")}</small>
-                  <small>{withdrawal.etaText || payoutEtaText(isPlatform ? "platform" : "coach")}</small>
-                  {withdrawal.reviewedAt && <small>审核时间：{withdrawal.reviewedAt}</small>}
+                  <small>
+                    打款去向：
+                    {withdrawal.destination ||
+                      (isPlatform ? "平台绑定收款账户 / 商户号结算账户" : "未填写收款账号")}
+                  </small>
+                  {withdrawal.status === "pending" && (
+                    <small>{withdrawal.etaText || "审核后请按该去向线下打款，预计 1 天左右处理。"}</small>
+                  )}
+                  {withdrawal.status === "approved" && (
+                    <small>已审核通过，请确认已按上述去向完成打款。</small>
+                  )}
+                  {withdrawal.status === "rejected" && <small>已拒绝，请与申请方沟通原因。</small>}
                 </span>
                 <strong>{formatMoney(withdrawal.amount)}</strong>
                 <span className={`pill ${withdrawal.status}`}>{withdrawal.status}</span>
@@ -1418,6 +1720,70 @@ function AdminDesk({
         </div>
       </div>
     </section>
+  );
+}
+
+function PaymentSetupPanel() {
+  const [config, setConfig] = useState<PaymentConfig | null>(null);
+
+  useEffect(() => {
+    fetch("/api/payment-config")
+      .then((response) => response.json() as Promise<PaymentConfig>)
+      .then(setConfig)
+      .catch(() => undefined);
+  }, []);
+
+  return (
+    <div className="panel payment-setup-panel">
+      <div className="section-title compact">
+        <div>
+          <h2>微信支付配置</h2>
+          <p>先用人工收款确认试运营；商户资料补齐后，这里会自动切换为扫码支付。</p>
+        </div>
+        <CreditCard size={24} />
+      </div>
+      {!config && <p className="muted">正在读取支付配置...</p>}
+      {config && (
+        <>
+          <span className={`pill ${config.configured ? "approved" : "pending"}`}>
+            {config.configured ? "微信支付已配置" : "微信支付未配置"}
+          </span>
+          {!config.configured && (
+            <div className="payment-setup-steps">
+              <a
+                className="primary link-button full"
+                href={config.merchantPortalUrl}
+                target="_blank"
+                rel="noreferrer"
+              >
+                <ExternalLink size={17} />
+                登录微信支付商户平台
+              </a>
+              <ol>
+                <li>用商户管理员微信扫码登录，确认商户号、绑定的公众号 AppID，并开通 Native 支付。</li>
+                <li>进入“账户中心 / API 安全”，设置 API v3 密钥，下载商户 API 证书并复制私钥内容。</li>
+                <li>获取商户 API 证书序列号，并下载或复制微信支付平台公钥。</li>
+                <li>到 Render 的 Environment 页面填入下方环境变量，然后重新部署服务。</li>
+              </ol>
+              <label className="field full-field">
+                <span>支付回调地址</span>
+                <input readOnly value={config.suggestedNotifyUrl} />
+              </label>
+              <div className="env-list">
+                {config.requiredEnv.map((item) => (
+                  <code key={item} className={config.missing.some((missing) => missing.includes(item)) ? "missing-env" : ""}>
+                    {item}
+                  </code>
+                ))}
+              </div>
+              <small className="muted">
+                当前缺少：{config.missing.length ? config.missing.join("、") : "无"}
+              </small>
+            </div>
+          )}
+        </>
+      )}
+    </div>
   );
 }
 
@@ -1570,14 +1936,17 @@ function CoachApplicationForm({
       <div className="section-title compact application-slots-title">
         <div>
           <h2>可预约时间</h2>
-          <p>至少开放一个可预约时间，支持按日期和星期灵活维护。</p>
+          <p>至少开放一个可预约时间，可自定义星期、日期和时间段。</p>
         </div>
         <button
           className="ghost"
           onClick={() =>
             setDraft({
               ...draft,
-              slots: [...draft.slots, defaultSlot()],
+              slots: [
+                ...draft.slots,
+                defaultSlot(),
+              ],
             })
           }
         >
@@ -1703,7 +2072,7 @@ function EditableCoach({
           value={coach.payoutMethod ?? ""}
           disabled={disabled}
           onChange={(event) => onUpdate(coach.id, { payoutMethod: event.target.value })}
-          placeholder="微信 / 银行卡 / 支付宝"
+          placeholder="微信、银行卡、支付宝等"
         />
       </label>
       <label className="field">
@@ -1712,29 +2081,38 @@ function EditableCoach({
           value={coach.payoutAccount ?? ""}
           disabled={disabled}
           onChange={(event) => onUpdate(coach.id, { payoutAccount: event.target.value })}
-          placeholder="真实收款账号或银行卡号"
+          placeholder="微信号 / 银行卡后四位 / 备注"
         />
       </label>
-      <p className="muted full-field payout-note">这两项会直接保存到教练资料里，用于提现审核，不再使用尾号占位。</p>
     </div>
   );
 }
 
-function WithdrawalList({ withdrawals }: { withdrawals: Withdrawal[] }) {
-  if (withdrawals.length === 0) return <p className="muted payout-history">暂无提现记录</p>;
+function WithdrawalList({ withdrawals, coach }: { withdrawals: Withdrawal[]; coach: Coach }) {
+  const coachWithdrawals = withdrawals.filter(
+    (withdrawal) => (withdrawal.target ?? "coach") === "coach" && withdrawal.coachId === coach.id,
+  );
+  if (coachWithdrawals.length === 0) {
+    return <p className="muted payout-history">暂无提现申请</p>;
+  }
   return (
     <div className="withdrawal-list">
-      {withdrawals.map((withdrawal) => (
-        <article key={withdrawal.id} className="withdrawal-item">
-          <div>
+      {coachWithdrawals.map((withdrawal) => (
+        <div key={withdrawal.id} className="withdrawal-item">
+          <span>
             <strong>{formatMoney(withdrawal.amount)}</strong>
-            <span className={`pill ${withdrawal.status}`}>{withdrawal.status}</span>
-          </div>
-          <p>{withdrawal.destination || "未填写收款账号"}</p>
-          <small>{withdrawal.etaText || payoutEtaText((withdrawal.target ?? "coach") as "coach" | "platform")}</small>
-          <small>申请时间：{withdrawal.createdAt}</small>
-          {withdrawal.reviewedAt && <small>审核时间：{withdrawal.reviewedAt}</small>}
-        </article>
+            <small>{withdrawal.createdAt}</small>
+          </span>
+          <span className={`pill ${withdrawal.status}`}>{withdrawal.status}</span>
+          <small>
+            {withdrawal.status === "pending"
+              ? "等待管理员审核，预计 1 天左右。"
+              : withdrawal.status === "approved"
+                ? `已审核通过，将打款至：${withdrawal.destination || "未填写收款账号"}`
+                : "提现被拒绝，请联系管理员确认原因。"}
+          </small>
+          {withdrawal.etaText && <small>{withdrawal.etaText}</small>}
+        </div>
       ))}
     </div>
   );
@@ -1819,35 +2197,64 @@ function BookingList({
     return <p className="muted">暂无预约</p>;
   }
 
+  const actionBookings = bookings.filter((booking) => isStudentActionStatus(booking.status));
+
   return (
     <div className="booking-stack">
+      {actionBookings.length > 0 && (
+        <div className="task-panel inline-task-panel">
+          <div className="section-title compact">
+            <div>
+              <h3>我的待办与消息</h3>
+              <p>下一步要做的事会优先显示在这里。</p>
+            </div>
+            <ClipboardList size={20} />
+          </div>
+          <div className="task-list">
+            {actionBookings.map((booking) => {
+              const coach = coaches.find((item) => item.id === booking.coachId);
+              const slot = getSlot(coach, booking.slotId);
+              return (
+                <div
+                  key={booking.id}
+                  className={`task-item ${isStudentActionStatus(booking.status) ? "urgent" : ""}`}
+                >
+                  <strong>{userBookingMessage(booking.status)}</strong>
+                  <small>
+                    {coach?.name ?? "未知教练"} · {slot ? `${slot.date} ${slot.time}` : "时间已删除"}
+                  </small>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
       {bookings.map((booking) => {
         const coach = coaches.find((item) => item.id === booking.coachId);
         const slot = getSlot(coach, booking.slotId);
-        const slotLabel = formatSlotTime(slot) || "时间已删除";
         const rating = ratingDraft[booking.id] ?? 5;
         const content = reviewDraft[booking.id] ?? "";
         const note = noteDraft[booking.id] ?? booking.note ?? "";
         return (
-          <article key={booking.id} className="booking-card">
+          <article
+            key={booking.id}
+            className={`booking-card ${isStudentActionStatus(booking.status) ? "highlight-card" : ""}`}
+          >
             <div>
               <strong>{coach?.name}</strong>
-              <span>{slotLabel}</span>
+              <span>{slot ? `${slot.weekday} ${slot.date} ${slot.time}` : "时间已删除"}</span>
               <small>
                 {statusText[booking.status]} · 金额 {formatMoney(booking.amount)}
               </small>
-              {booking.status === "payment_pending" && (
-                <em className="todo-label">待办：平台确认收款后，教练会收到确认提醒</em>
-              )}
-              {booking.status === "paid" && <em className="todo-label">待办：等待教练接受</em>}
+              <em className={`todo-label ${booking.status === "declined" ? "rejected" : ""}`}>
+                {userBookingMessage(booking.status)}
+              </em>
               {booking.status === "accepted" && (
                 <div className="service-reminder">
                   <strong>服务中提醒</strong>
-                  <p>预约时间：{slotLabel}</p>
-                  <small>请在这个时间段完成对话，结束后教练确认完成，你再提交评价。</small>
+                  <small>预约时间：{formatSlotTime(slot)}。请按约定时间完成对话。</small>
                 </div>
               )}
-              {booking.status === "declined" && <em className="todo-label rejected">教练未接受，请联系平台处理退款或重约</em>}
             </div>
             <div className="booking-actions">
               {booking.status === "reserved" && (
@@ -1879,9 +2286,9 @@ function BookingList({
                     </option>
                   ))}
                 </select>
-                <textarea
-                  value={content}
+                <input
                   maxLength={reviewMaxLength}
+                  value={content}
                   onChange={(event) => setReviewDraft({ ...reviewDraft, [booking.id]: event.target.value })}
                   placeholder={`${currentUser.name}，写下这次对话的反馈，最多 ${reviewMaxLength} 字`}
                 />
@@ -1921,6 +2328,7 @@ function CoachBookingTable({
     reserved: 4,
     reviewed: 5,
     declined: 6,
+    cancelled: 7,
   };
   const sortedBookings = [...bookings].sort(
     (left, right) => statusPriority[left.status] - statusPriority[right.status],
@@ -1931,12 +2339,12 @@ function CoachBookingTable({
         const slot = getSlot(coach, booking.slotId);
         const user = users.find((item) => item.id === booking.userId);
         return (
-          <div key={booking.id}>
+          <div key={booking.id} className={isCoachActionStatus(booking.status) ? "highlight-card" : ""}>
             <span>
               <strong>{user?.name ?? "未知用户"}</strong>
-              {booking.status === "paid" && <small className="new-order">新预约待接受</small>}
-              {booking.status === "accepted" && <small className="new-order">服务中</small>}
-              {booking.status === "completed" && <small className="new-order">待评价</small>}
+              <small className={isCoachActionStatus(booking.status) ? "new-order" : ""}>
+                {coachBookingMessage(booking.status)}
+              </small>
               {booking.note && <small>留言：{booking.note}</small>}
             </span>
             <small>{slot ? `${slot.date} ${slot.time}` : "时间已删除"}</small>
@@ -1989,6 +2397,7 @@ function AdminBookingTable({
     completed: 4,
     reviewed: 5,
     declined: 6,
+    cancelled: 7,
   };
   const sortedBookings = [...bookings].sort(
     (left, right) => statusPriority[left.status] - statusPriority[right.status],
@@ -2115,16 +2524,43 @@ function PaymentModal({
   const [allowMock, setAllowMock] = useState(false);
   const [error, setError] = useState("");
   const [manualRequested, setManualRequested] = useState(false);
+  const [paymentNotice, setPaymentNotice] = useState("");
 
   useEffect(() => {
     if (!booking) return;
     let stopped = false;
+    const inWechat = isWechatBrowser();
+    let shouldSyncWechatPay = false;
     setLoading(true);
     setError("");
+    setPaymentNotice("");
     setMissing([]);
     setQrDataUrl("");
     setCodeUrl("");
     setManualRequested(false);
+
+    const applyRemoteStore = (remoteStore: Store) => {
+      const remoteBooking = remoteStore.bookings.find((item) => item.id === booking.id);
+      if (remoteBooking?.status === "paid") {
+        onStoreReplace(remoteStore);
+        onClose();
+        return true;
+      }
+      onStoreReplace(remoteStore);
+      return false;
+    };
+
+    const syncWechatPayment = async () => {
+      const response = await fetch("/api/payments/wechat/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bookingId: booking.id }),
+      });
+      if (!response.ok) return false;
+      const payload = (await response.json()) as { store: Store };
+      if (stopped || !payload.store) return false;
+      return applyRemoteStore(payload.store);
+    };
 
     fetch("/api/payment-config")
       .then((response) => response.json())
@@ -2135,7 +2571,8 @@ function PaymentModal({
           setMissing(config.missing ?? []);
           return null;
         }
-        return fetch("/api/payments/wechat/native", {
+        shouldSyncWechatPay = true;
+        return fetch(inWechat ? "/api/payments/wechat/jsapi" : "/api/payments/wechat/native", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ bookingId: booking.id }),
@@ -2145,13 +2582,22 @@ function PaymentModal({
         if (!response || stopped) return null;
         if (!response.ok) {
           return response.json().then((body) => {
-            throw new Error(body.message || body.error || "微信支付下单失败");
+            throw new Error(getApiErrorMessage(body, "微信支付下单失败"));
           });
         }
         return response.json();
       })
-      .then((payment) => {
+      .then(async (payment) => {
         if (!payment || stopped) return;
+        if (payment.payParams) {
+          setPaymentNotice("正在拉起微信支付...");
+          await invokeWechatPay(payment.payParams);
+          if (!stopped) {
+            setPaymentNotice("支付已完成，正在等待微信回调确认订单。");
+            await syncWechatPayment().catch(() => false);
+          }
+          return;
+        }
         setQrDataUrl(payment.qrDataUrl);
         setCodeUrl(payment.codeUrl);
       })
@@ -2163,15 +2609,15 @@ function PaymentModal({
       });
 
     const poll = window.setInterval(() => {
-      fetch("/api/store")
-        .then((response) => response.json())
-        .then((remoteStore: Store) => {
-          if (stopped) return;
-          const remoteBooking = remoteStore.bookings.find((item) => item.id === booking.id);
-          if (remoteBooking?.status === "paid") {
-            onStoreReplace(remoteStore);
-            onClose();
-          }
+      (shouldSyncWechatPay ? syncWechatPayment() : Promise.resolve(false))
+        .then((closed) => {
+          if (closed || stopped) return null;
+          return fetch("/api/store");
+        })
+        .then((response) => response?.json() as Promise<Store> | undefined)
+        .then((remoteStore) => {
+          if (stopped || !remoteStore) return;
+          applyRemoteStore(remoteStore);
         })
         .catch(() => undefined);
     }, 3000);
@@ -2195,7 +2641,7 @@ function PaymentModal({
     });
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      setError(body.error || "测试支付未启用");
+      setError(getApiErrorMessage(body, "测试支付未启用"));
       setLoading(false);
       return;
     }
@@ -2213,7 +2659,7 @@ function PaymentModal({
     });
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
-      setError(body.error || "提交人工确认失败");
+      setError(getApiErrorMessage(body, "提交人工确认失败"));
       setLoading(false);
       return;
     }
@@ -2239,7 +2685,14 @@ function PaymentModal({
         <strong>{formatMoney(booking.amount)}</strong>
         {loading && <p className="muted">正在创建微信支付订单...</p>}
         {qrDataUrl && (
-          <p className="muted">请使用微信扫码支付。支付成功回调后，订单会自动进入平台托管。</p>
+          <p className="muted">
+            请使用另一台手机扫码支付；微信内同屏长按识别可能不可用。支付成功回调后，订单会自动进入平台托管。
+          </p>
+        )}
+        {paymentNotice && (
+          <div className="payment-success">
+            <strong>{paymentNotice}</strong>
+          </div>
         )}
         {codeUrl && <textarea className="code-url" readOnly value={codeUrl} />}
         {missing.length > 0 && (
