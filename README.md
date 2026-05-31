@@ -127,6 +127,22 @@ npm run check:online
 
 这个检查会确认线上健康接口、支付配置、人工收款确认接口、管理员备份接口保护，以及订单引用完整性。
 
+## 免费实例保活
+
+Render 免费实例长时间闲置后会休眠，下一次访问会触发冷启动，首屏请求可能慢到 50 秒以上。服务端健康检查接口会返回当前实例时间、运行时长和保活来源：
+
+```text
+https://coach.zhixingmap.com/api/health
+```
+
+临时改善方式：在 UptimeRobot、cron-job.org、Better Stack Uptime 等外部监控服务里添加 HTTP GET 监控，每 10 分钟访问上面的健康检查地址。可选请求头：
+
+```text
+x-keep-alive-source: external-monitor
+```
+
+注意：这是免费实例的临时改善，不是强 SLA。外部定时器可能有延迟，Render 也可能按平台策略调整休眠；正式运营建议升级 Render 付费实例或迁移到稳定服务器。如果要用 GitHub Actions 做仓库内保活，需要 GitHub token 具备 `workflow` 权限后再新增 workflow 文件。
+
 当前版本使用服务端 JSON 文件存储，适合试用环境。Render 免费实例默认文件系统是临时的，重启或重新部署后可能丢失本地写入数据；管理员应在试运营阶段定期从后台导出数据备份。
 
 如果要继续使用 JSON 文件并保留数据，需要把 Render 服务升级到支持 Persistent Disk 的付费实例，挂载例如 `/var/data`，并配置：

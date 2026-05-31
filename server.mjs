@@ -879,8 +879,14 @@ function decryptWechatResource(resource) {
   return JSON.parse(decrypted.toString("utf8"));
 }
 
-app.get("/api/health", (_request, response) => {
-  response.json({ ok: true });
+app.get("/api/health", (request, response) => {
+  response.json({
+    ok: true,
+    service: "coach-marketplace-h5",
+    uptimeSeconds: Math.round(process.uptime()),
+    checkedAt: new Date().toISOString(),
+    keepAlive: request.get("x-keep-alive-source") || null,
+  });
 });
 
 app.get(/^\/(MP_verify_[A-Za-z0-9_-]+\.txt)$/, (request, response, next) => {
