@@ -117,14 +117,18 @@ async function main() {
     await gotoPortal(page, "/coach");
     await page.getByRole("heading", { name: "申请成为教练" }).waitFor();
     await page.getByLabel("展示名称").fill("测试教练");
-    await page.getByLabel("单次价格").fill("499");
+    await page.getByLabel("单次价格").fill("0499");
+    await page.getByLabel("单次价格").blur();
+    assert((await page.getByLabel("单次价格").inputValue()) === "499", "价格输入应自动去掉前导 0");
     await page.getByLabel("标题").fill("申请阶段填写的教练标题");
     await page.getByLabel("教练介绍").fill("这是提交审核前填写的教练介绍。");
     await page.getByLabel("背景介绍").fill("这是提交审核前填写的背景介绍。");
     await page.getByLabel("特长，用逗号分隔").fill("职业规划，表达训练");
-    await page.getByLabel("提现方式").fill("微信");
-    await page.getByLabel("收款账号").fill("coach-real-pay-account");
+    await page.getByLabel("银行卡户名").fill("测试教练");
+    await page.getByLabel("开户行").fill("招商银行上海分行");
+    await page.getByLabel("银行卡号").fill("6225881234567890");
     await page.locator(".slot-edit-row").last().locator("input[type='date']").fill("2026-05-28");
+    await page.locator(".slot-edit-row").last().filter({ hasText: "周四" }).waitFor();
     await page.locator(".slot-edit-row").last().locator("input").nth(1).fill("14:30-15:30");
     await clickText(page, "提交教练申请");
     await page.waitForFunction(() => {
@@ -138,16 +142,22 @@ async function main() {
               coach.listingStatus === "unlisted" &&
               coach.title === "申请阶段填写的教练标题" &&
               coach.price === 499 &&
-              coach.payoutMethod === "微信" &&
-              coach.payoutAccount === "coach-real-pay-account" &&
-              coach.slots.some((slot) => slot.date === "2026-05-28" && slot.time === "14:30-15:30"),
+              coach.payoutMethod === "银行卡" &&
+              coach.payoutAccountName === "测试教练" &&
+              coach.payoutBankName === "招商银行上海分行" &&
+              coach.payoutAccount === "6225881234567890" &&
+              coach.slots.some(
+                (slot) =>
+                  slot.date === "2026-05-28" &&
+                  slot.weekday === "周四" &&
+                  slot.time === "14:30-15:30",
+              ),
           ),
         );
     });
 
     await clickText(page, "退出");
     await login("admin");
-    await page.locator(".current-account").filter({ hasText: "管理员" }).waitFor();
     await gotoPortal(page, "/admin");
     await page.getByRole("heading", { name: "管理后台" }).waitFor();
     await page.getByText("微信支付配置").waitFor();
@@ -195,12 +205,17 @@ async function main() {
     await login("coach-openid");
     await page.locator(".current-account").filter({ hasText: "测试教练" }).waitFor();
     await gotoPortal(page, "/coach");
-    await page.getByLabel("单次价格").fill("599");
+    await page.getByRole("button", { name: "编辑资料" }).click();
+    await page.getByLabel("单次价格").fill("0599");
+    await page.getByLabel("单次价格").blur();
+    assert((await page.getByLabel("单次价格").inputValue()) === "599", "编辑价格应自动去掉前导 0");
     await page.getByLabel("标题").fill("真实环境测试教练");
     await page.getByLabel("教练介绍").fill("这是从空环境注册并审核通过的教练。");
     await clickText(page, "添加");
     await page.locator(".slot-edit-row").last().locator("input[type='date']").fill("2026-05-28");
+    await page.locator(".slot-edit-row").last().filter({ hasText: "周四" }).waitFor();
     await page.locator(".slot-edit-row").last().locator("input").nth(1).fill("15:00-16:00");
+    await page.getByRole("button", { name: "保存资料" }).click();
     await page.waitForFunction(() => {
       return fetch("/api/store")
         .then((response) => response.json())
@@ -249,7 +264,6 @@ async function main() {
 
     await clickText(page, "退出");
     await login("admin");
-    await page.locator(".current-account").filter({ hasText: "管理员" }).waitFor();
     await gotoPortal(page, "/admin");
     await page.getByText("订单收款与流转").waitFor();
     await page
@@ -281,7 +295,7 @@ async function main() {
         .then((response) => response.json())
         .then((state) => state.bookings.some((booking) => booking.status === "completed"));
     });
-    const unavailableWithdrawButton = page.getByRole("button", { name: /申请提现/ });
+    const unavailableWithdrawButton = page.getByRole("button", { name: /申请本月结算/ });
     assert(
       !(await unavailableWithdrawButton.isEnabled()),
       "学员评价前教练不应能提现",
@@ -302,8 +316,8 @@ async function main() {
     await login("coach-openid");
     await page.locator(".current-account").filter({ hasText: "测试教练" }).waitFor();
     await gotoPortal(page, "/coach");
-    const withdrawButton = page.getByRole("button", { name: /申请提现/ });
-    assert(await withdrawButton.isEnabled(), "完成订单后教练应可申请提现");
+    const withdrawButton = page.getByRole("button", { name: /申请本月结算/ });
+    assert(await withdrawButton.isEnabled(), "完成订单后教练应可申请本月结算");
     await withdrawButton.click();
     await page.waitForFunction(() => {
       return fetch("/api/store")
@@ -312,15 +326,15 @@ async function main() {
           state.withdrawals.some(
             (withdrawal) =>
               withdrawal.status === "pending" &&
-              withdrawal.destination === "微信 · coach-real-pay-account" &&
-              withdrawal.etaText,
+              withdrawal.destination === "银行卡 · 测试教练 · 招商银行上海分行 · 6225881234567890" &&
+              withdrawal.etaText &&
+              withdrawal.period,
           ),
         );
     });
 
     await clickText(page, "退出");
     await login("admin");
-    await page.locator(".current-account").filter({ hasText: "管理员" }).waitFor();
     await gotoPortal(page, "/admin");
     await page.getByRole("heading", { name: "管理后台" }).waitFor();
     await page.locator(".switch").click();

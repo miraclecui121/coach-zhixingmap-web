@@ -542,6 +542,11 @@ p {
   padding: 12px;
 }
 
+.priority-panel {
+  border-color: #d6b24a;
+  box-shadow: 0 12px 28px rgba(112, 77, 0, 0.08);
+}
+
 .task-list {
   display: grid;
   gap: 8px;
@@ -815,6 +820,12 @@ p {
   font-weight: 700;
 }
 
+.field small {
+  color: #6b7872;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .full-field {
   grid-column: 1 / -1;
 }
@@ -827,6 +838,23 @@ p {
 
 .backup-link {
   margin-top: 14px;
+}
+
+.edit-toolbar {
+  align-items: center;
+  background: #f8faf9;
+  border: 1px solid #e1e8e4;
+  border-radius: 8px;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+}
+
+.edit-toolbar span {
+  color: #52625c;
+  font-size: 13px;
 }
 
 .metric {
@@ -856,6 +884,20 @@ p {
   display: grid;
   gap: 8px;
   grid-template-columns: 86px 150px minmax(120px, 1fr) 76px 40px;
+}
+
+.weekday-chip {
+  align-items: center;
+  background: #edf7f3;
+  border: 1px solid #cae5da;
+  border-radius: 8px;
+  color: #236057;
+  display: inline-flex;
+  font-size: 14px;
+  font-weight: 800;
+  justify-content: center;
+  min-height: 42px;
+  padding: 0 10px;
 }
 
 .mini-check {

@@ -155,6 +155,21 @@ function isSlotOccupiedStatus(status) {
   return status !== "declined" && status !== "cancelled";
 }
 
+function weekdayFromDate(date = "") {
+  const [year, month, day] = String(date).split("-").map(Number);
+  if (!year || !month || !day) return "";
+  const weekdays = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+  return weekdays[new Date(year, month - 1, day).getDay()];
+}
+
+function slotsHaveMatchingWeekdays(slots = []) {
+  return slots.every((slot) => slot.weekday === weekdayFromDate(slot.date));
+}
+
+function isValidPrice(value) {
+  return Number.isSafeInteger(value) && value > 0;
+}
+
 function getCompletedIncome(store, coachId) {
   return store.bookings
     .filter(
@@ -165,11 +180,51 @@ function getCompletedIncome(store, coachId) {
     .reduce((sum, booking) => sum + Number(booking.coachIncome || 0), 0);
 }
 
+function normalizeBankAccount(value = "") {
+  return String(value).replace(/\s+/g, "");
+}
+
+function isValidBankAccount(value = "") {
+  return /^\d{8,30}$/.test(normalizeBankAccount(value));
+}
+
+function hasValidBankPayoutInfo(coach = {}) {
+  return Boolean(
+    String(coach.payoutAccountName || "").trim() &&
+      String(coach.payoutBankName || "").trim() &&
+      isValidBankAccount(coach.payoutAccount),
+  );
+}
+
 function coachPayoutDestination(coach) {
-  const method = String(coach?.payoutMethod || "").trim();
-  const account = String(coach?.payoutAccount || "").trim();
-  if (!method || !account) return "";
-  return `${method} · ${account}`;
+  const accountName = String(coach?.payoutAccountName || "").trim();
+  const bankName = String(coach?.payoutBankName || "").trim();
+  const account = normalizeBankAccount(coach?.payoutAccount);
+  if (!accountName || !bankName || !isValidBankAccount(account)) return "";
+  return `银行卡 · ${accountName} · ${bankName} · ${account}`;
+}
+
+function currentPayoutPeriod(date = new Date()) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function coachPayoutEtaText() {
+  return "每月结算审核通过后，由管理员线下打款；到账以银行处理为准，通常 1-3 个工作日";
+}
+
+function coachHasOrders(store, coachId) {
+  return store.bookings.some((booking) => booking.coachId === coachId);
+}
+
+function hasCurrentPeriodWithdrawal(store, coachId) {
+  const period = currentPayoutPeriod();
+  return store.withdrawals.some(
+    (withdrawal) =>
+      (withdrawal.target ?? "coach") === "coach" &&
+      withdrawal.coachId === coachId &&
+      withdrawal.period === period &&
+      withdrawal.status !== "rejected",
+  );
 }
 
 function getPaidOut(store, coachId) {
@@ -203,6 +258,10 @@ function isAllowedCoachApplication(currentStore, nextStore, user) {
     newCoach.userId !== user.id ||
     newCoach.status !== "pending" ||
     getCoachListingStatus(newCoach) !== "unlisted" ||
+    !isValidPrice(newCoach.price) ||
+    !slotsHaveMatchingWeekdays(newCoach.slots) ||
+    newCoach.payoutMethod !== "银行卡" ||
+    !hasValidBankPayoutInfo(newCoach) ||
     currentStore.coaches.some((coach) => coach.userId === user.id)
   ) {
     return false;
@@ -226,7 +285,11 @@ function isAllowedOwnCoachUpdate(currentStore, nextStore, user) {
     nextCoach.id !== currentCoach.id ||
     nextCoach.userId !== currentCoach.userId ||
     nextCoach.status !== currentCoach.status ||
-    nextCoach.listingStatus !== currentCoach.listingStatus
+    nextCoach.listingStatus !== currentCoach.listingStatus ||
+    !isValidPrice(nextCoach.price) ||
+    !slotsHaveMatchingWeekdays(nextCoach.slots) ||
+    !hasValidBankPayoutInfo(nextCoach) ||
+    (coachHasOrders(currentStore, currentCoach.id) && nextCoach.price !== currentCoach.price)
   ) {
     return false;
   }
@@ -242,7 +305,8 @@ function isAllowedCoachResubmit(currentStore, nextStore, user) {
     nextCoach.id !== currentCoach.id ||
     nextCoach.userId !== currentCoach.userId ||
     nextCoach.status !== "pending" ||
-    getCoachListingStatus(nextCoach) !== "unlisted"
+    getCoachListingStatus(nextCoach) !== "unlisted" ||
+    !hasValidBankPayoutInfo(nextCoach)
   ) {
     return false;
   }
@@ -384,7 +448,9 @@ function isAllowedCoachWithdrawal(currentStore, nextStore, user) {
       currentCoach.status === "approved" &&
       destination &&
       withdrawal.destination === destination &&
-      withdrawal.etaText === "预计 1 个工作日内由管理员审核并发起打款" &&
+      withdrawal.etaText === coachPayoutEtaText() &&
+      withdrawal.period === currentPayoutPeriod() &&
+      !hasCurrentPeriodWithdrawal(currentStore, currentCoach.id) &&
       withdrawal.amount > 0 &&
       withdrawal.amount <= withdrawable,
   );
